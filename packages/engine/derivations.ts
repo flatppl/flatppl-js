@@ -4023,7 +4023,7 @@ function isMeasureBinding(b: any): boolean {
   const t = b.inferredType;
   if (t && (t.kind === 'measure' || t.kind === 'function' || t.kind === 'kernel')) return true;
   if (b.synthetic && b.ir && b.ir.kind === 'call' && b.ir.op
-      && MEASURE_PRODUCING.has(b.ir.op)) return true;
+      && (MEASURE_PRODUCING.has(b.ir.op) || b.ir.moduleDistribution)) return true;
   return false;
 }
 

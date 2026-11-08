@@ -576,6 +576,13 @@ function _lowerCallExpr(node: any, ctx: any, builtinHead = false): any {
     if (node.callee && node.callee.type === 'FieldAccess'
         && node.callee.object && node.callee.object.type === 'Identifier'
         && (node.callee.object.name === 'self' || ctx.moduleNames?.has(node.callee.object.name))) {
+      // A standard module's distribution is a measure constructor, lowered as
+      // the distribution call its REGISTRY entry evaluates (§09).
+      if (ctx.moduleDistributions?.get(node.callee.object.name)?.has(node.callee.field)) {
+        return _lowerCallExpr({ ...node, moduleDistribution: true, callee: {
+          type: 'Identifier', name: node.callee.field, loc: node.callee.loc,
+        } }, ctx, true);
+      }
       const lowered: any = {
         kind: 'call',
         target: { ns: node.callee.object.name, name: node.callee.field },
@@ -645,9 +652,10 @@ function _lowerCallExpr(node: any, ctx: any, builtinHead = false): any {
   }
 
   const out: any = { kind: 'call', loc: node.loc };
-  if (builtin && ALL_KNOWN.has(calleeName)) {
-    // Built-in: bare-symbol head per FlatPIR.
+  if (builtin && (ALL_KNOWN.has(calleeName) || node.moduleDistribution)) {
+    // Built-in (or a standard module's distribution): bare-symbol head per FlatPIR.
     out.op = calleeName;
+    if (node.moduleDistribution) out.moduleDistribution = true;
   } else {
     // User-defined: routed via (%ref self <name>).
     out.target = { ns: 'self', name: calleeName };

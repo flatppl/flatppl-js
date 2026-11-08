@@ -143,7 +143,8 @@ function lowerToModule(parsedBindings: Map<string, any>, opts?: any) {
   // body refs stay `self`, spec §11) from one naming nothing (a pure
   // formal — placeholder semantics, the spec §04 lambda rule).
   const bindingNames = new Set<string>(parsedBindings.keys());
-  const lowerCtx = { localScope: null, moduleNames, bindingNames };
+  const moduleDistributions = require('./standard-modules.ts').moduleDistributionsOf(parsedBindings);
+  const lowerCtx = { localScope: null, moduleNames, bindingNames, moduleDistributions };
 
   // Module registry: alias → resolved descriptor for downstream
   // consumers (typeinfer / materialiser / sampler) that need to

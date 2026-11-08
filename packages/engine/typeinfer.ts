@@ -583,6 +583,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // User-defined call: lower.js puts the callee on `target`.
     if (expr.target) return inferUserCall(expr, scopes);
 
+    // A standard module's distribution call, marked by lower from the module
+    // entry's distribution set. Every §09 distribution has domain `reals`.
+    if (expr.moduleDistribution) {
+      for (const a of expr.args || []) inferExpr(a, scopes);
+      for (const k of Object.keys(expr.kwargs || {})) inferExpr(expr.kwargs[k], scopes);
+      return write(T.measure(T.REAL), expr);
+    }
+
     // Expression-headed user call (spec §11 %call, b070d0a): the callee
     // is an expression — an inline reification in the common case
     // (`functionof(e, p = a)(2.5)`, a lambda application) — that must
