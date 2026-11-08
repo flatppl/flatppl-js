@@ -142,12 +142,9 @@ export function rebuildDerivations(ctx: Ctx) {
         const ic = arg.value;
         if (ic.type === 'CallExpr' && ic.callee
             && ic.callee.name === 'interval'
-            && Array.isArray(ic.args) && ic.args.length === 2
-            && literalNumberValue(ic.args[0]) != null
-            && literalNumberValue(ic.args[1]) != null) {
-          sourceIntervals[arg.name] = {
-            lo: literalNumberValue(ic.args[0]), hi: literalNumberValue(ic.args[1]),
-          };
+            && Array.isArray(ic.args) && ic.args.length === 2) {
+          const lo = literalNumberValue(ic.args[0]), hi = literalNumberValue(ic.args[1]);
+          if (lo != null && hi != null) sourceIntervals[arg.name] = { lo, hi };
         }
       }
     }
