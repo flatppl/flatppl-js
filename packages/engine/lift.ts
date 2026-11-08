@@ -1066,7 +1066,6 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineScalarLocscale(astArg);
       astArg = inlineIidTruncate(astArg);
       astArg = inlineCallbackParameters(astArg);
-      astArg = inlineKscanConstants(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
       astArg = inlineExponentialTilt(astArg);
@@ -1116,32 +1115,11 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
-  // §04 "Additional arguments": `kscan` holds a scalar, record or other non-collection input
-  // constant at every step. The trajectory lowering reads its inputs as sequences, so write the
-  // input as the length-one sequence `[value]`, which repeats at every step: the same meaning,
-  // decided here where the input's type is still known.
-  function inlineKscanConstants(astArg: any) {
-    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
-        || astArg.callee.name !== 'kscan' || (astArg.args?.length || 0) <= 2
-        || (!astArg.builtin && out.has('kscan'))) return astArg;
-    let changed = false;
-    const args = astArg.args.map((arg: any, i: number) => {
-      if (i < 2) return arg;
-      const value = arg.type === 'KeywordArg' ? arg.value : arg;
-      const kind = __knownAstType(value)?.kind;
-      if (!kind || ['array', 'table', 'any', 'deferred', 'var', 'failed', 'tuple'].includes(kind)) return arg;
-      changed = true;
-      const wrapped = { type: 'ArrayLiteral', elements: [value], loc: value.loc || astArg.loc };
-      return arg.type === 'KeywordArg' ? { ...arg, value: wrapped } : wrapped;
-    });
-    return changed ? { ...astArg, args } : astArg;
-  }
-
-  // §04 "Additional arguments": specialize the fixed callable after source checks.
-  // A private body shares the existing operator machinery while the additional
-  // arguments remain explicit dependencies, including inverse and volume terms.
-  // weighted / logweighted / pushfwd / reduce take any number of them, positional
-  // or named, passed whole; filter and scan traverse them as sequences at run time.
+  // §04 "Explicit callback parameters": specialize the fixed callable after source
+  // checks. A private body shares the existing operator machinery while the final
+  // parameter `p` remains an explicit dependency, including inverse and volume terms.
+  // weighted / logweighted / pushfwd / reduce take at most one `p`, positional, passed
+  // whole (or splatted across several callback inputs).
   function inlineCallbackParameters(astArg: any) {
     if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
