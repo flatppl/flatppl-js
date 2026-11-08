@@ -132,49 +132,53 @@ function recordFieldIRs(ir: any, bindings: any, kind: 'record' | 'table'): Recor
   return Object.fromEntries(ir.fields.map((f: any) => [f.name, f.value]));
 }
 
+const CALLBACK_PARAMETER_FORMS: Record<string, string> = {
+  markovchain: 'markovchain(kernel, init, n, p)',
+  kscan: 'kscan(kernel, init, xs, p)',
+};
+
 /**
- * §04 "Additional arguments": bind the arguments after the operation's own to the
- * kernel's remaining inputs, positionally or by name (a sole record, or for kscan a
- * sole table, splats its fields by name when two or more inputs remain). Returns the
- * IR bound to each remaining input, or a `{ reason }` refusal.
+ * §04 "Explicit callback parameters": at most one final parameter `p` follows the
+ * operation's own arguments and binds the kernel's input after its `leading` ones,
+ * whole. `p` is positional. For `markovchain`, a sole record or table `p` splats
+ * its fields by name when two or more inputs remain. Returns the IR bound to each remaining input, or a `{ reason }`
+ * refusal.
  */
-function bindAdditionalIRs(op: string, ir: any, bindings: any, extras: { args: any[]; kwargs: Record<string, any> }):
-  { bound: Record<string, any> } | { reason: string } {
+function bindParameterIRs(op: string, ir: any, bindings: any, leading: number,
+  extras: { args: any[]; kwargs: Record<string, any> }): { bound: Record<string, any> } | { reason: string } {
   const params: string[] = ir.params;
-  const rest = params.slice(1);
-  const restNames: string[] = (ir.paramKwargs || params).slice(1);
-  const bound: Record<string, any> = {};
-  const byName = (entries: Array<[string, any]>) => {
-    for (const [name, value] of entries) {
-      const index = restNames.indexOf(name);
-      if (index < 0) return { reason: 'the kernel has no input named "' + name + '" after its state' };
-      bound[rest[index]] = value;
-    }
-    return null;
-  };
-  const named = Object.keys(extras.kwargs);
-  let problem: { reason: string } | null = null;
-  if (named.length) {
-    if (extras.args.length) return { reason: 'additional arguments are all positional or all named, not both' };
-    problem = byName(named.map((name): [string, any] => [name, extras.kwargs[name]]));
-  } else if (extras.args.length === 1 && rest.length >= 2) {
-    const fields = recordFieldIRs(extras.args[0], bindings, op === 'kscan' ? 'table' : 'record')
-      || recordFieldIRs(extras.args[0], bindings, 'record');
-    if (!fields) {
-      return { reason: 'a sole record or table argument must have statically visible fields to bind '
-        + 'the ' + rest.length + ' remaining inputs by name' };
-    }
-    problem = byName(Object.entries(fields));
-  } else {
-    if (extras.args.length !== rest.length) {
-      return { reason: 'the kernel has ' + rest.length + ' inputs after its state, but ' + extras.args.length
-        + ' additional arguments were given' };
-    }
-    extras.args.forEach((value, i) => { bound[rest[i]] = value; });
+  const rest = params.slice(leading);
+  const restNames: string[] = (ir.paramKwargs || params).slice(leading);
+  if (Object.keys(extras.kwargs).length) {
+    return { reason: 'the final parameter is positional: `' + CALLBACK_PARAMETER_FORMS[op]
+      + '`; pass several values as one record `p`, for example `record(a = 2.0)`, not as keyword arguments' };
   }
-  if (problem) return problem;
-  const unbound = rest.filter(param => !(param in bound));
-  if (unbound.length) return { reason: 'a kernel input is not bound by the additional arguments' };
+  if (extras.args.length > 1) {
+    return { reason: 'takes one optional final parameter: `' + CALLBACK_PARAMETER_FORMS[op]
+      + '`, with `p` passed whole to the callback; pack several parameters into one record `p`, '
+      + 'and several sequences into one table' };
+  }
+  if (!extras.args.length) {
+    return rest.length ? { reason: 'a kernel input is not bound: the kernel has ' + rest.length
+      + ' input(s) after the ones the operation supplies, and no parameter `p` was given' } : { bound: {} };
+  }
+  if (!rest.length) return { reason: 'the kernel takes no parameter `p` after the inputs the operation supplies' };
+  if (rest.length === 1) return { bound: { [rest[0]]: extras.args[0] } };
+  // `markovchain` splats a sole record or table across several inputs; `kscan` reads `p` whole.
+  const fields = op === 'markovchain'
+    ? recordFieldIRs(extras.args[0], bindings, 'record') || recordFieldIRs(extras.args[0], bindings, 'table')
+    : null;
+  if (!fields) {
+    return { reason: 'the kernel has ' + rest.length + ' inputs after the ones the operation supplies, '
+      + 'but takes one parameter `p`; read its fields as `p.name`' };
+  }
+  const bound: Record<string, any> = {};
+  for (const [name, value] of Object.entries(fields)) {
+    const index = restNames.indexOf(name);
+    if (index < 0) return { reason: 'the kernel has no input named "' + name + '" after its state' };
+    bound[rest[index]] = value;
+  }
+  if (rest.some(param => !(param in bound))) return { reason: 'a kernel input is not bound by the record `p`' };
   return { bound };
 }
 
@@ -212,12 +216,20 @@ function describeStepKernel(compIR: any, bindings: any, op?: string,
   if (params.length < 1) {
     return { reason: shownAs + ' has no inputs; §06 ' + opName + ' needs the state input first' };
   }
-  if (opName === 'kscan' && extras.args.length + Object.keys(extras.kwargs).length === 0) {
-    return { reason: 'kscan needs at least one array or table input after `init` (§06)' };
+  // `kscan` traverses its sequence `xs`, given positionally after `init`.
+  const xsIR = opName === 'kscan' ? extras.args[0] : undefined;
+  if (opName === 'kscan' && !xsIR) {
+    return { reason: 'kscan traverses one sequence `xs`, given positionally after `init` (§06)' };
   }
-  const additional = bindAdditionalIRs(opName, ir, bindings, extras);
+  const leading = opName === 'kscan' ? 2 : 1;
+  if (params.length < leading) {
+    return { reason: shownAs + ' takes ' + params.length + ' input(s); §06 ' + opName
+      + ' supplies ' + leading };
+  }
+  const parameterExtras = { args: opName === 'kscan' ? extras.args.slice(1) : extras.args, kwargs: extras.kwargs };
+  const additional = bindParameterIRs(opName, ir, bindings, leading, parameterExtras);
   if ('reason' in additional) {
-    return { reason: shownAs + ': ' + additional.reason + ' (§04 "Additional arguments")' };
+    return { reason: shownAs + ': ' + additional.reason + ' (§04 "Explicit callback parameters")' };
   }
   const dist = _peelLawof(ir.body);
   if (!dist || dist.kind !== 'call' || !dist.op
@@ -243,10 +255,10 @@ function describeStepKernel(compIR: any, bindings: any, op?: string,
     }
     for (let i = 0; i < positional.length; i++) distKwargs[distParams[i]] = positional[i];
   }
-  const rest = params.slice(1);
-  // `markovchain` passes the additional arguments whole: substitute them now. `kscan`
-  // traverses them as sequences: its descriptor lists them for the per-step element.
-  if (opName === 'markovchain' && rest.length) {
+  // The parameter `p` is passed whole: substitute it now. `kscan`'s sequence input
+  // is listed for the per-step element.
+  const rest = params.slice(leading);
+  if (rest.length) {
     const substitute = require('./mat-broadcast.ts').substituteKernelParams;
     for (const name of Object.keys(distKwargs)) {
       distKwargs[name] = substitute(distKwargs[name], rest, rest, additional.bound);
@@ -254,8 +266,8 @@ function describeStepKernel(compIR: any, bindings: any, op?: string,
   }
   return {
     inputParam: params[0],
-    xParams: opName === 'kscan' ? rest : [],
-    xSequences: opName === 'kscan' ? rest.map(param => ({ param, ir: additional.bound[param] })) : [],
+    xParams: opName === 'kscan' ? [params[1]] : [],
+    xSequences: opName === 'kscan' ? [{ param: params[1], ir: xsIR }] : [],
     distOp: dist.op,
     distParams,
     distKwargs,
@@ -525,14 +537,6 @@ function checkTrajectoryKernels(bindings: any, fixedValues?: any): any[] {
           message: 'kscan: a sequence length does not resolve before sampling — §06 '
             + 'gives the trajectory length from the sequences, so each must be an '
             + 'array literal or a fixed-phase array value',
-          loc: ir.loc,
-        });
-      } else if (new Set(lengths.filter((n: number) => n !== 1)).size > 1) {
-        out.push({
-          name,
-          severity: 'error',
-          message: 'kscan: the sequence inputs have unequal lengths ' + lengths.join(', ')
-            + '; only length-one inputs repeat (spec §04)',
           loc: ir.loc,
         });
       }

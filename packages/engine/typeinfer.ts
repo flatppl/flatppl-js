@@ -130,6 +130,19 @@ function recordRowsTable(record: any, nrows: any): any {
   return T.table(columns, nrows);
 }
 
+/** The positional form §04 "Explicit callback parameters" gives each operation
+ *  that takes one optional final parameter `p`. */
+const CALLBACK_PARAMETER_FORMS: Record<string, string> = {
+  weighted: 'weighted(f, M, p)',
+  logweighted: 'logweighted(f, M, p)',
+  pushfwd: 'pushfwd(f, M, p)',
+  reduce: 'reduce(f, xs, p)',
+  markovchain: 'markovchain(kernel, init, n, p)',
+  filter: 'filter(pred, data, p)',
+  scan: 'scan(f, init, xs, p)',
+  kscan: 'kscan(kernel, init, xs, p)',
+};
+
 function isVectorOfVectors(t: any): boolean {
   return t?.kind === 'array' && t.rank === 1 && t.elem?.kind === 'array';
 }
@@ -1676,83 +1689,76 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   /**
-   * §04 "Additional arguments": the operation supplies `leading` (the types of
-   * the callable's first inputs) and the call's remaining arguments bind the
-   * rest, positionally or by name, passed whole. A sole additional record or
-   * table passes whole when one positional input remains; otherwise its fields
-   * or columns bind the remaining inputs by name. No input is left unbound or
-   * bound twice. Returns the input types in the callable's own order, or null
-   * after reporting the violation.
+   * §04 "Explicit callback parameters": the operation supplies `leading` (the types
+   * of the callable's first inputs) and at most one final parameter `p` follows,
+   * passed whole. `scan` and `kscan` first traverse one sequence `xs` (a vector or a
+   * table, whose element or row the callable sees). `p` is positional. A sole
+   * record or table `p` splats its fields or columns by name when two or more
+   * inputs remain, except on `scan`, `kscan` and `filter`, which pass it whole.
+   * Returns the input types in the callable's own order, or null after reporting
+   * the violation.
    */
   function additionalInputs(fExpr: any, leading: any[], extras: any[],
     keywords: Record<string, any>, scopes: any, op: string, loc: any,
     sequences?: { lengths: any[]; sizesFirst?: boolean; unresolved?: boolean }): any[] | null {
-    const fail = (message: string) => {
-      diagnostics.push({ severity: 'error', loc, message: op + ': ' + message + ' (spec §04 "Additional arguments")' });
+    const fail = (message: string, at: any = loc) => {
+      diagnostics.push({ severity: 'error', loc: at,
+        message: '`' + op + '`: ' + message + ' (spec §04 "Explicit callback parameters")' });
       return null;
     };
     const names = Object.keys(keywords);
+    const form = CALLBACK_PARAMETER_FORMS[op.split(' ')[0]] || op + '(..., p)';
+    if (names.length) {
+      return fail('the final parameter is positional: `' + form + '`; pass several values as one record `p`, '
+        + 'for example `record(a = 2.0)`, not as keyword arguments', keywords[names[0]]?.loc ?? loc);
+    }
     const types = extras.map((e: any) => inferExpr(e, scopes));
     if (types.some((t: any) => t?.kind === 'failed')) return null;
-    // `filter`, `scan` and `kscan` follow broadcasting (§04 "Additional arguments"): a one-dimensional
-    // array or table is traversed, the callable seeing its element or row, and its length is
-    // recorded. A scalar or other non-collection input is held constant at every step.
-    // Records are constant callback parameters, not operands of `broadcast`.
-    // A tuple or an array of rank two or more is a static error.
-    const asSequence = (t: any): any => {
-      if (!sequences) return t;
-      if (!t || ['any', 'deferred', 'var'].includes(t.kind)) {
-        // An input whose type is not resolved yet constrains nothing, unless it is the first
-        // sequence, which then leaves the length dynamic.
-        sequences.unresolved = true;
-        if (sequences.sizesFirst && sequences.lengths.length === 0) sequences.lengths.push('%dynamic');
-        return T.any();
-      }
-      if (t.kind === 'array' && t.rank === 1) { sequences.lengths.push(t.shape[0]); return t.elem; }
-      if (t.kind === 'array') {
-        fail('an additional input of rank ' + t.rank + ' is a higher-dimensional array; '
-          + 'write `[A]` to supply the vector A at every step');
-        return undefined;
-      }
-      if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
-      if (t.kind === 'tuple') {
-        fail('an additional input is a tuple, which these operations neither traverse nor hold constant, '
-          + 'as for the operands of `broadcast` '
-          + '(tuples and higher-dimensional arrays are a static error)');
-        return undefined;
-      }
-      return t;
-    };
-    if (names.length === 0 && types.length === 0) return leading;
-    if (names.length && types.length) {
-      return fail('additional arguments are all positional or all named, not both');
+    // `scan` and `kscan` traverse their first argument after the leading ones.
+    const traversing = !!sequences?.sizesFirst;
+    const allowed = (traversing ? 1 : 0) + 1;
+    if (types.length > allowed) {
+      return fail('takes one optional final parameter: `' + form + '`, with `p` passed whole to the '
+        + 'callback; pack several parameters into one record `p`, and several sequences into one table',
+      extras[allowed]?.loc ?? loc);
     }
-    const declared = names.length || (types.length === 1
-      && (types[0]?.kind === 'record' || types[0]?.kind === 'table'))
+    const head: any[] = [...leading];
+    let rest = types;
+    if (traversing) {
+      const xs = types[0];
+      if (!xs) return fail('traverses one sequence `xs`, given positionally after `init`');
+      if (['any', 'deferred', 'var'].includes(xs.kind)) {
+        sequences!.unresolved = true;
+        sequences!.lengths.push('%dynamic');
+        head.push(T.any());
+      } else if (xs.kind === 'array' && xs.rank === 1) {
+        sequences!.lengths.push(xs.shape[0]);
+        head.push(xs.elem);
+      } else if (xs.kind === 'table') {
+        sequences!.lengths.push(xs.nrows);
+        head.push(T.rowRecordType(xs));
+      } else {
+        return fail('traverses one sequence `xs`, which must be a one-dimensional array or a table');
+      }
+      rest = types.slice(1);
+    }
+    if (rest.length === 0) return head;
+    const sole = rest[0];
+    // `scan`, `kscan` and `filter` pass `p` whole, whatever its shape.
+    const declared = !sequences && (sole?.kind === 'record' || sole?.kind === 'table')
       ? declaredInputNames(fExpr, scopes) : null;
-    let named: Record<string, any> | null = null;
-    if (names.length) {
-      named = Object.fromEntries(names.map(name => [name, inferExpr(keywords[name], scopes)]));
-    } else if (declared && declared.length - leading.length >= 2
-        && !(sequences && types[0]?.kind === 'record')) {
-      const sole = types[0];
-      if (sole?.kind === 'record') named = { ...sole.fields };
-      else if (sole?.kind === 'table') named = { ...sole.columns };
+    if (declared && declared.length - head.length >= 2) {
+      const fields = sole.kind === 'record' ? sole.fields : sole.columns;
+      const remaining = declared.slice(head.length);
+      for (const name of Object.keys(fields)) {
+        if (!remaining.includes(name)) return fail('the callable has no remaining input named "' + name + '"');
+      }
+      for (const name of remaining) {
+        if (!(name in fields)) return fail('the remaining input "' + name + '" is not bound');
+      }
+      return [...head, ...remaining.map(name => fields[name])];
     }
-    if (!named) {
-      const elems = types.map(asSequence);
-      return elems.some((t: any) => t === undefined) ? null : [...leading, ...elems];
-    }
-    if (!declared) return fail('the callable\'s input names are not known, so additional arguments cannot bind by name');
-    const rest = declared.slice(leading.length);
-    for (const name of Object.keys(named)) {
-      if (!rest.includes(name)) return fail('the callable has no remaining input named "' + name + '"');
-    }
-    for (const name of rest) {
-      if (!(name in named)) return fail('the remaining input "' + name + '" is not bound');
-    }
-    const bound = rest.map(name => asSequence(named![name]));
-    return bound.some((t: any) => t === undefined) ? null : [...leading, ...bound];
+    return [...head, sole];
   }
 
   /** §04 callback invocation binds each input whole, including final p. */
@@ -1793,9 +1799,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   /** §04 reductions and §07 filtering share the optional final input rule. */
   function inferCollectionCallback(expr: any, scopes: any): any {
     const op = expr.op;
-    // §04 "Additional arguments": the operation supplies the leading inputs and the
-    // remaining arguments bind the callable's other inputs, positionally or by name.
-    // `reduce` passes them whole; `filter` and `scan` traverse them as sequences.
+    // §04 "Explicit callback parameters": the operation supplies the leading inputs
+    // and at most one final parameter `p` follows, passed whole. `scan` traverses
+    // one sequence `xs` first.
     const leadingNames = op === 'scan' ? ['f', 'init'] : op === 'filter' ? ['pred', 'data'] : ['f', 'xs'];
     const count = leadingNames.length;
     const given = expr.args || [], kwargs = expr.kwargs || {};
@@ -4949,7 +4955,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         message: 'kscan: at least one array or table input follows `init` (spec §06)' });
       return T.failed('kscan sequences');
     }
-    // §04: arrays and tables after `init` are traversed together; other inputs are held constant.
+    // §04: `xs` follows `init` and is traversed; an optional final `p` is passed whole.
     const lengths: any[] = [];
     const sequences = { lengths, sizesFirst: true, unresolved: false };
     const inputs = additionalInputs(args[0], [stateT], args.slice(2), expr.kwargs || {}, scopes,

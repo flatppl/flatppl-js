@@ -8,7 +8,7 @@ $$x_k \sim \mathrm{Normal}(x_{k-1} + \delta,\ \sigma), \qquad x_0 = 0 .$$
 
 The whole trajectory is one measure, built with `markovchain` (§06 dependent
 composition). Each step receives the previous state and the same drift and noise
-scale as additional arguments. The initial state carries no density and is not
+scale in one parameter record. The initial state carries no density and is not
 a trajectory element.
 
 Both $\delta$ and $\sigma$ are inferred, with the priors
@@ -61,9 +61,9 @@ sigma_step ~ normalize(truncate(Cauchy(0, 1), interval(0, inf)))
 Pi_prior = lawof(record(sigma_step = sigma_step, drift = drift))
 
 % One step of the walk: the state and the two parameters enter the mean and the scale
-step_kernel(prev, sigma, delta) = Normal(prev + delta, sigma)
+step_kernel(prev, q) = Normal(prev + q.drift, q.sigma_step)
 
-x ~ markovchain(step_kernel, x_init, n, sigma_step, drift)
+x ~ markovchain(step_kernel, x_init, n, (sigma_step = sigma_step, drift = drift))
 
 %%%
 The likelihood scores exactly: logdensityof(x, x_data) at fixed sigma_step
