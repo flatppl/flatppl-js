@@ -33,6 +33,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fc = require('fast-check');
 
+// Every property run is seeded, so a CI failure reproduces from its log.
+// FC_SEED=<n> explores another seed locally; fast-check prints the seed and
+// counterexample path of any failure.
+const FC_SEED = Number(process.env.FC_SEED ?? 20261108);
+const fcOpts = (numRuns: number) => ({ numRuns, seed: FC_SEED });
+
 const ops = require('../ops.ts');
 const valueLib = require('../value.ts');
 const sampler = require('../sampler.ts');
@@ -246,7 +252,7 @@ test('ops conformance: cross — atom-indep dispatch matches ARITH_OPS.cross', (
     const viaDispatch = ops.dispatch('cross', sample.args);
     const viaArith    = ARITH_OPS.cross(sample.args[0], sample.args[1]);
     assert.deepEqual(dataArr(viaDispatch), dataArr(viaArith));
-  }), { numRuns: 200 });
+  }), fcOpts(200));
 });
 
 // ---------------------------------------------------------------------
@@ -270,7 +276,7 @@ test('ops conformance: cross — atom-batched dispatch matches per-atom stacking
       flat[i * 3 + 2] = pa[2];
     }
     assert.deepEqual(Array.from(viaDispatch.data), Array.from(flat));
-  }), { numRuns: 200 });
+  }), fcOpts(200));
 });
 
 // ---------------------------------------------------------------------
@@ -282,7 +288,7 @@ test('ops conformance: self_outer — atom-indep dispatch matches ARITH_OPS.self
     const viaDispatch = ops.dispatch('self_outer', sample.args);
     const viaArith    = ARITH_OPS.self_outer(sample.args[0]);
     assert.deepEqual(dataArr(viaDispatch), dataArr(viaArith));
-  }), { numRuns: 150 });
+  }), fcOpts(150));
 });
 
 test('ops conformance: self_outer — atom-batched dispatch produces shape=[N, n, n]', () => {
@@ -301,7 +307,7 @@ test('ops conformance: self_outer — atom-batched dispatch produces shape=[N, n
       assert.deepEqual(slice, pa,
         'atom ' + i + ': batched slice must equal per-atom result');
     }
-  }), { numRuns: 150 });
+  }), fcOpts(150));
 });
 
 // ---------------------------------------------------------------------
@@ -347,7 +353,7 @@ function pinUnaryLinalgOp(opName: string, arbInputs: any) {
       const viaArith    = ARITH_OPS[opName](A);
       assert.ok(approxEqual(viaDispatch, viaArith),
         opName + ' atom-indep mismatch (dispatch vs ARITH_OPS)');
-    }), { numRuns: 100 });
+    }), fcOpts(100));
   });
   // 2. atom-batched dispatch ≡ stacked per-atom logical results.
   test('ops conformance: ' + opName + ' — atom-batched dispatch matches per-atom stacking', () => {
@@ -381,7 +387,7 @@ function pinUnaryLinalgOp(opName: string, arbInputs: any) {
             opName + ' batched atom ' + i + ' must equal atom-indep result');
         }
       },
-    ), { numRuns: 50 });
+    ), fcOpts(50));
   });
 }
 
@@ -595,7 +601,7 @@ test('ops conformance: vector — variadic dispatch matches ARITH_OPS.vector', (
         assert.deepEqual(viaDispatch, viaArith);
       }
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 test('ops conformance: cat — variadic dispatch matches ARITH_OPS.cat (scalars)', () => {
@@ -608,7 +614,7 @@ test('ops conformance: cat — variadic dispatch matches ARITH_OPS.cat (scalars)
       assert.deepEqual(Array.from(viaDispatch.data),
                        Array.from(viaArith.data));
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 test('ops conformance: cat — variadic dispatch matches ARITH_OPS.cat (vectors)', () => {
@@ -625,7 +631,7 @@ test('ops conformance: cat — variadic dispatch matches ARITH_OPS.cat (vectors)
       assert.deepEqual(Array.from(viaDispatch.data),
                        Array.from(viaArith.data));
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 test('ops dispatch: variadic ops accept zero args', () => {
@@ -664,7 +670,7 @@ test('ops conformance: transpose — matrix dispatch matches ARITH_OPS.transpose
       assert.deepEqual(dDisp.shape, dArith.shape);
       assert.deepEqual(Array.from(dDisp.data), Array.from(dArith.data));
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 test('ops conformance: transpose — vector (rank 1) tag-flips', () => {
@@ -704,7 +710,7 @@ test('ops conformance: linsolve(A, b) — vector b matches ARITH_OPS', () => {
       assert.ok(approxEqual(dDisp, dArith),
         'linsolve vector b mismatch (dispatch vs ARITH_OPS)');
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 test('ops conformance: linsolve(A, b) — matrix b matches ARITH_OPS', () => {
@@ -729,7 +735,7 @@ test('ops conformance: linsolve(A, b) — matrix b matches ARITH_OPS', () => {
       assert.ok(approxEqual(dDisp, dArith),
         'linsolve matrix b mismatch (dispatch vs ARITH_OPS)');
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 // diagmat takes a VECTOR input, returns a structured diag matrix.
@@ -752,7 +758,7 @@ test('ops conformance: diagmat — atom-indep dispatch matches ARITH_OPS', () =>
         Array.from(viaArith.data),
         'diagmat must produce the same diag-stored data');
     },
-  ), { numRuns: 100 });
+  ), fcOpts(100));
 });
 
 // ---------------------------------------------------------------------
@@ -870,7 +876,7 @@ const _pinScalar = (label: string, op: string, arb: any, arity: number) => {
     assert.ok(ops.isDeclared(op), op + ' must be declared (logical attached)');
     const args = Array(arity).fill(arb);
     fc.assert(fc.property(...args, (...xs: any[]) =>
-      _cclose(ops.dispatch(op, xs), ARITH_OPS[op](...xs))), { numRuns: 150 });
+      _cclose(ops.dispatch(op, xs), ARITH_OPS[op](...xs))), fcOpts(150));
   });
 };
 
@@ -901,9 +907,9 @@ for (const op of ['land', 'lor', 'lxor']) _pinScalar(op, op, arbBool, 2);
 _pinScalar('lnot', 'lnot', arbBool, 1);
 test('ops conformance: ifelse / boolean / integer casts dispatch via logical', () => {
   fc.assert(fc.property(arbBool, arbReal, arbReal, (c: any, a: any, b: any) =>
-    _cclose(ops.dispatch('ifelse', [c, a, b]), ARITH_OPS.ifelse(c, a, b))), { numRuns: 100 });
+    _cclose(ops.dispatch('ifelse', [c, a, b]), ARITH_OPS.ifelse(c, a, b))), fcOpts(100));
   fc.assert(fc.property(fc.integer({ min: -1000, max: 1000 }), (n: any) =>
-    _cclose(ops.dispatch('integer', [n]), ARITH_OPS.integer(n))), { numRuns: 50 });
+    _cclose(ops.dispatch('integer', [n]), ARITH_OPS.integer(n))), fcOpts(50));
   fc.assert(fc.property(fc.constantFrom(0, 1, true, false), (x: any) =>
-    _cclose(ops.dispatch('boolean', [x]), ARITH_OPS.boolean(x))), { numRuns: 20 });
+    _cclose(ops.dispatch('boolean', [x]), ARITH_OPS.boolean(x))), fcOpts(20));
 });
