@@ -120,6 +120,16 @@ const KERNEL_SLOT: Record<string, number> = {
   builtin_tonormal: 0, builtin_fromnormal: 0, builtin_sample: 1,
 };
 
+/** Rows of record type `record` collected into a table (spec §03): a nested
+ *  record field becomes a nested table column. */
+function recordRowsTable(record: any, nrows: any): any {
+  const columns: Record<string, any> = {};
+  for (const [name, field] of Object.entries(record.fields) as [string, any][]) {
+    columns[name] = field.kind === 'record' ? recordRowsTable(field, nrows) : field;
+  }
+  return T.table(columns, nrows);
+}
+
 function isVectorOfVectors(t: any): boolean {
   return t?.kind === 'array' && t.rank === 1 && t.elem?.kind === 'array';
 }
@@ -1861,6 +1871,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const steps = lengths.length && lengths.every(n => typeof n === 'number')
       ? (known[0] ?? 1) : '%dynamic';
+    // §06 makes record trajectories of kscan, "a stochastic version of scan",
+    // tables, so a record accumulator collects into a table too.
+    if (op === 'scan' && state?.kind === 'record') return recordRowsTable(state, steps);
     return T.array(1, [op === 'scan' ? steps : '%dynamic'], state);
   }
 
@@ -4257,15 +4270,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           message: 'record-valued broadcast requires one axis (spec §04)' });
         return T.failed('multi-axis record broadcast');
       }
-      // §03: a nested record field collects into a nested table column.
-      function collectRows(record: any): any {
-        const columns: Record<string, any> = {};
-        for (const [name, field] of Object.entries(record.fields) as [string, any][]) {
-          columns[name] = field.kind === 'record' ? collectRows(field) : field;
-        }
-        return T.table(columns, outerShape![0]);
-      }
-      return collectRows(elem);
+      return recordRowsTable(elem, outerShape![0]);
     }
     // Default to real for unknown cell types — broadcast is by design
     // numeric, and downstream consumers (viewer plot-routing, materialise
