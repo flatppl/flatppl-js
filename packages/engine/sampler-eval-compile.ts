@@ -24,6 +24,7 @@ function initCompiler(deps: any): void {
 }
 
 const _valueOps = require('./value-ops.ts');
+const { forEachIRChild } = require('./ir-walk.ts');
 const _gamma = require('@stdlib/math-base-special-gamma');
 const _gammaln = require('@stdlib/math-base-special-gammaln');
 const _erfc = require('@stdlib/math-base-special-erfc');
@@ -153,20 +154,11 @@ const _COMPILE_ARITY: Record<string, number> =
 function _hasPerAtomRef(ir: any, perAtomNames: Set<string>): boolean {
   if (!ir || typeof ir !== 'object') return false;
   if (ir.kind === 'ref') return perAtomNames.has(ir.name);
-  if (ir.kind !== 'call') return false;
-  const args = ir.args || [];
-  for (let i = 0; i < args.length; i++) {
-    if (_hasPerAtomRef(args[i], perAtomNames)) return true;
-  }
-  if (ir.kwargs) for (const k in ir.kwargs) {
-    if (_hasPerAtomRef(ir.kwargs[k], perAtomNames)) return true;
-  }
-  if (Array.isArray(ir.fields)) {
-    for (let i = 0; i < ir.fields.length; i++) {
-      if (_hasPerAtomRef(ir.fields[i] && ir.fields[i].value, perAtomNames)) return true;
-    }
-  }
-  return false;
+  let found = false;
+  forEachIRChild(ir, (child: any) => {
+    if (!found && _hasPerAtomRef(child, perAtomNames)) found = true;
+  });
+  return found;
 }
 
 // A compiled plan: a loop fn plus the metadata to bind its inputs.
