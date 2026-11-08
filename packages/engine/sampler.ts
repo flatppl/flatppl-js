@@ -937,8 +937,8 @@ const ARITH_OPS = {
   // don't coerce truthy values, the typeinfer pass already requires
   // boolean operands. lxor is exclusive-or; ifelse is the conditional
   // expression returning the first or second branch by cond.
-  land:    (a: any, b: any) => a && b,
-  lor:     (a: any, b: any) => a || b,
+  land:    (a: any, b: any) => !!a && !!b,
+  lor:     (a: any, b: any) => !!a || !!b,
   lxor:    (a: any, b: any) => !a !== !b,
   lnot:    (a: any) => !a,
   ifelse:  (c: any, a: any, b: any) => c ? a : b,

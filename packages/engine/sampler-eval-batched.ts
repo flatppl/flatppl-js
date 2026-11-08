@@ -969,6 +969,15 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
 // `null` / `undefined` result.
 const _BATCH_FELL_THROUGH = Symbol('batch-fell-through');
 
+function _readsAnyRef(ir: any, names: Set<string>): boolean {
+  if (!ir || typeof ir !== 'object' || names.size === 0) return false;
+  if (ir.kind === 'ref') return ir.ns === 'self' && names.has(ir.name);
+  if (Array.isArray(ir.args) && ir.args.some((a: any) => _readsAnyRef(a, names))) return true;
+  if (ir.kwargs) for (const k of Object.keys(ir.kwargs)) if (_readsAnyRef(ir.kwargs[k], names)) return true;
+  if (Array.isArray(ir.fields) && ir.fields.some((f: any) => _readsAnyRef(f && f.value, names))) return true;
+  return false;
+}
+
 function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const kw = ir.kwargs || {};
   // Each op has the same coefficient-class + x shape; pull both.
@@ -991,10 +1000,18 @@ function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv
   // detect this by evaluating against baseEnv WITHOUT refArrays.
   // The cheap path: if the IR has no self-refs, evaluation against
   // baseEnv succeeds; otherwise it throws and we fall through.
+  // Precedence overlay > refArrays > baseEnv: an operand that reads a
+  // per-atom name the overlay does not shadow is not atom-independent.
+  const perAtom = new Set<string>(refArrays ? Object.keys(refArrays) : []);
+  if (overlay) for (const k of Object.keys(overlay)) perAtom.delete(k);
+  if (_readsAnyRef(coeffsIR, perAtom) || (op === 'stepwise' && _readsAnyRef(edgesIR, perAtom))) {
+    return _BATCH_FELL_THROUGH;
+  }
+  const indepEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
   let coeffs, edges;
   try {
-    coeffs = evaluateExpr(coeffsIR, baseEnv);
-    if (op === 'stepwise') edges = evaluateExpr(edgesIR, baseEnv);
+    coeffs = evaluateExpr(coeffsIR, indepEnv);
+    if (op === 'stepwise') edges = evaluateExpr(edgesIR, indepEnv);
   } catch (_) {
     return _BATCH_FELL_THROUGH;
   }
