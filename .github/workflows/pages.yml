@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GRAMMARS_DIR: ${{ github.workspace }}/.grammars
+      EXAMPLES_DIR: ${{ github.workspace }}/.examples
       # flatppl-rust sibling for the convert wasm-api build (web/build.mjs
       # honours FLATPPL_RUST_DIR over the default ../flatppl-rust location).
       FLATPPL_RUST_DIR: ${{ github.workspace }}/.flatppl-rust
@@ -69,6 +70,13 @@ jobs:
           ref: main
           path: .grammars
 
+      - name: Check out flatppl-examples (deterministic examples source)
+        uses: actions/checkout@v7
+        with:
+          repository: flatppl/flatppl-examples
+          ref: main
+          path: .examples
+
       - name: Check out flatppl-rust (convert wasm-api source)
         uses: actions/checkout@v7
         with:
@@ -83,6 +91,18 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm ci
+
+      # The pinned theme release, cached by pin: fetch-theme.mjs reuses a
+      # verified bundle in vendor/flatppl-theme and downloads nothing.
+      - name: Read the flatppl-theme pin
+        id: theme
+        run: echo "pin=$(node --input-type=module -e "import('./packages/web/scripts/fetch-theme.mjs').then((m) => console.log(m.THEME_PIN))")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the flatppl-theme bundle
+        uses: actions/cache@v6
+        with:
+          path: vendor/flatppl-theme
+          key: flatppl-theme-${{ steps.theme.outputs.pin }}
 
       # Convert is ON by default; the deployed gallery cross-compiles
       # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. Same toolchain
@@ -103,6 +123,9 @@ jobs:
           tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
       - name: Build web package
+        env:
+          # Sent to api.github.com when a github.com download fails.
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run build --workspace=packages/web
 
       - name: Configure Pages
