@@ -4140,8 +4140,15 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       // such as an iid over a relabel or a §04 multi-name relabel, still
       // scores: matLogdensityof lowers it structurally and walks it, so the
       // lowering below decides.
+      // A callable (functionof, kernelof) in the measure position keeps pruning:
+      // only a measure binding takes this path. A binding lift hoisted carries
+      // no inferred type, so its IR decides.
       const mName = (d as any).measureName;
-      if (!resolvable(mName) && !isMeasureBinding(bindings.get(mName))) return false;
+      const mb: any = bindings.get(mName);
+      const measureTyped = mb && (mb.inferredType
+        ? mb.inferredType.kind === 'measure'
+        : isMeasureBinding(mb) && !(mb.ir && mb.ir.kind === 'call' && mb.ir.op === 'functionof'));
+      if (!resolvable(mName) && !measureTyped) return false;
       input = mName;                                  // mirrors matLogdensityof
     } else if (d.kind === 'jointchain') {
       if (name == null) return null;                  // caller didn't pass a name
