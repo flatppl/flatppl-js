@@ -28,6 +28,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyThemeBundle } from './verify-theme.mjs';
+import { downloadReleaseAsset } from './github-download.mjs';
 
 export const THEME_REPOSITORY = 'https://github.com/flatppl/flatppl-theme';
 
@@ -73,8 +74,12 @@ function fail(message) {
   return new Error(`${message}\n${HINT}`);
 }
 
+export function themeAssetName(tag) {
+  return `flatppl-theme-${tag}.tar.gz`;
+}
+
 export function themeReleaseUrl(tag) {
-  return `${THEME_REPOSITORY}/releases/download/${tag}/flatppl-theme-${tag}.tar.gz`;
+  return `${THEME_REPOSITORY}/releases/download/${tag}/${themeAssetName(tag)}`;
 }
 
 /** Where the theme comes from, by precedence: an explicit directory, the
@@ -121,27 +126,6 @@ async function cachedRelease(themeDir, tag) {
 
 /** A bundle is well under a few MB; anything larger is not the theme. */
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT_MS = 30_000;
-
-async function download(url, fetchImpl, attempts = 4) {
-  let lastErr;
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      // The timeout bounds a stalled connection; the retry loop only helps
-      // with hard errors.
-      const res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > MAX_ARCHIVE_BYTES) throw new Error(`archive is ${buf.length} bytes, more than a theme bundle can be`);
-      return buf;
-    } catch (err) {
-      lastErr = err;
-      if (i < attempts) await new Promise((r) => setTimeout(r, 500 * 2 ** (i - 1)));
-    }
-  }
-  throw fail(`theme: could not download ${url}: ${lastErr?.message || lastErr}`);
-}
-
 function untar(archive, dir) {
   return new Promise((resolveP, reject) => {
     const tar = spawn('tar', ['-xzf', archive, '-C', dir], { stdio: ['ignore', 'inherit', 'inherit'] });
@@ -154,13 +138,22 @@ function untar(archive, dir) {
 
 /** Fetch the release tarball into a temp dir, check it, then move it
  *  into place. The tarball holds the bundle's files at its top level. */
-async function fetchRelease(tag, themeDir, fetchImpl) {
+async function fetchRelease(tag, themeDir, fetchImpl, env, log) {
   const url = themeReleaseUrl(tag);
   const tmpRoot = await mkdtemp(join(tmpdir(), 'flatppl-theme-'));
   try {
     const archive = join(tmpRoot, 'bundle.tar.gz');
     const extract = join(tmpRoot, 'bundle');
-    await writeFile(archive, await download(url, fetchImpl));
+    let bytes;
+    try {
+      bytes = await downloadReleaseAsset({
+        owner: 'flatppl', repo: 'flatppl-theme', tag, asset: themeAssetName(tag),
+        fetchImpl, env, maxBytes: MAX_ARCHIVE_BYTES, log,
+      });
+    } catch (err) {
+      throw fail(`theme: ${err.message}`);
+    }
+    await writeFile(archive, bytes);
     await mkdir(extract, { recursive: true });
     await untar(archive, extract);
     const manifest = await readManifest(extract);
@@ -216,7 +209,7 @@ export async function syncTheme({
   if (await cachedRelease(themeDir, tag)) {
     log(`theme: using cached flatppl-theme ${tag} (verified)`);
   } else {
-    await fetchRelease(tag, themeDir, fetchImpl);
+    await fetchRelease(tag, themeDir, fetchImpl, env, log);
     log(`theme: fetched flatppl-theme ${tag} from GitHub (verified)`);
   }
   const manifest = await readManifest(themeDir);

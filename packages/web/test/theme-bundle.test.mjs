@@ -159,7 +159,11 @@ test('the release path downloads the pinned tarball, verifies it, and then reuse
     syncTheme({ repoRoot: join(root, 'repo'), themeDir, env: { ...env, FLATPPL_THEME_REF: 'v0.0.1' }, log: () => {}, fetchImpl: impl }),
     /could not download .*v0\.0\.1/,
   );
-  assert.equal(calls.length, 5, 'the other tag was actually requested (with retries)');
+  // Three tries at the download URL, then three at the REST API release lookup.
+  assert.deepEqual(calls.slice(1), [
+    ...Array(3).fill(themeReleaseUrl('v0.0.1')),
+    ...Array(3).fill('https://api.github.com/repos/flatppl/flatppl-theme/releases/tags/v0.0.1'),
+  ], 'the other tag was actually requested (with retries)');
 });
 
 test('a symlink inside a bundle fails verification and is never installed', async (t) => {
@@ -243,4 +247,37 @@ test('a tarball for a different release than the one asked for is rejected', asy
     syncTheme({ repoRoot: join(root, 'repo'), themeDir: join(root, 'drop'), env: { FLATPPL_THEME_NO_SIBLING: '1' }, log: () => {}, fetchImpl: impl }),
     /is not flatppl-theme v0\.1\.10/,
   );
+});
+
+test('a release asset the download URL cannot serve comes through the REST API, verified the same way', async (t) => {
+  const root = await tmp(t, 'theme-sync-api-');
+  const src = join(root, 'src');
+  await fakeBundle(src);
+  const archive = join(root, 'bundle.tar.gz');
+  await tarGz(src, archive);
+  const buf = await readFile(archive);
+  const assetUrl = 'https://api.github.com/repos/flatppl/flatppl-theme/releases/assets/42';
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push([url, init.headers?.Accept ?? null, init.headers?.Authorization ?? null]);
+    if (url === themeReleaseUrl(THEME_PIN)) return { ok: false, status: 504, statusText: 'Gateway Timeout' };
+    if (url === `https://api.github.com/repos/flatppl/flatppl-theme/releases/tags/${THEME_PIN}`) {
+      const body = Buffer.from(JSON.stringify({ assets: [{ name: 'other.zip', url: 'x' }, { name: `flatppl-theme-${THEME_PIN}.tar.gz`, url: assetUrl }] }));
+      return { ok: true, status: 200, statusText: 'OK', arrayBuffer: async () => body };
+    }
+    if (url === assetUrl && init.headers?.Accept === 'application/octet-stream') {
+      return { ok: true, status: 200, statusText: 'OK', arrayBuffer: async () => buf };
+    }
+    return { ok: false, status: 404, statusText: 'Not Found' };
+  };
+  const themeDir = join(root, 'drop');
+  const got = await syncTheme({ repoRoot: join(root, 'repo'), themeDir, env: { FLATPPL_THEME_NO_SIBLING: '1', GITHUB_TOKEN: 'tok' }, log: () => {}, fetchImpl: impl });
+  assert.deepEqual(got, { source: { kind: 'release', tag: THEME_PIN }, verified: true, version: THEME_PIN.slice(1) });
+  assert.deepEqual(await verifyThemeBundle(themeDir), []);
+  assert.deepEqual(calls.slice(3), [
+    [`https://api.github.com/repos/flatppl/flatppl-theme/releases/tags/${THEME_PIN}`, 'application/vnd.github+json', 'Bearer tok'],
+    [assetUrl, 'application/octet-stream', 'Bearer tok'],
+  ]);
+  assert.equal(calls.slice(0, 3).every(([u, , auth]) => u === themeReleaseUrl(THEME_PIN) && auth === null), true,
+    'the download URL is tried first, without the token');
 });
