@@ -130,7 +130,7 @@ function resolveDrawSupport(target: any, bindings: any): any {
   if (op === 'Uniform' || op === 'Lebesgue' || op === 'Counting') {
     const supportIR = distIR.kwargs && distIR.kwargs.support;
     if (supportIR) {
-      const d = parseSetIR(supportIR);
+      const d = parseSetIR(supportIR, bindings);
       if (d) return d;
     }
     if (op === 'Lebesgue') return { kind: 'reals' };
@@ -167,7 +167,7 @@ function resolveAxisBaseSet(source: any, bindings: any) {
       || (target.node && target.node.value && lowerSafe(target.node.value));
     if (ir && ir.kind === 'call' && ir.op === 'elementof'
         && Array.isArray(ir.args) && ir.args.length === 1) {
-      const setDescr = parseSetIR(ir.args[0]);
+      const setDescr = parseSetIR(ir.args[0], bindings);
       // A vector set has no per-axis bounds for the viewer's auto-domain.
       if (setDescr && setDescr.kind !== 'vectorset') return setDescr;
     }

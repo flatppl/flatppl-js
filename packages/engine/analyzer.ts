@@ -35,6 +35,8 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       const b = bindings.get(name);
       if (!b) return false;
       if (b.type === 'lawof') return true;
+      // A named posterior (`post = bayesupdate(L, prior)`) is a measure (§06).
+      if (b.type === 'bayesupdate') return true;
       // 'call'-type bindings can be measure-typed (e.g., theta_dist = Normal(...)).
       if (b.type === 'call' && b.node && b.node.value) {
         return isMeasureExpr(b.node.value, bindings, seen);

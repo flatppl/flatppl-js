@@ -923,7 +923,10 @@ interface StaticConsumeResult {
  * Use `staticDensityShapeCheck` (below) for the strict empty-rest
  * wrapper — typically what callers want.
  */
-function staticConsume(ir: any, variateType: any): StaticConsumeResult {
+// `opts.partial`: the caller (a positional joint component other than the
+// last) consumes only a prefix of the variate; an iid there takes its n
+// entries and leaves the rest. Everywhere else an iid must match exactly.
+function staticConsume(ir: any, variateType: any, opts?: { partial?: boolean }): StaticConsumeResult {
   if (!ir) return { logpType: T.REAL, rest: variateType, deferred: true };
   // Self-ref measures (e.g. `m = Normal(0, 1); lawof(m)`) are
   // beyond v0.1 scope — caller can pre-expand if needed.
@@ -944,10 +947,10 @@ function staticConsume(ir: any, variateType: any): StaticConsumeResult {
   // weighted/logweighted: (weight, base) — base in args[1].
   // normalize / truncate: (base, ...) — base in args[0].
   if (op === 'weighted' || op === 'logweighted') {
-    return staticConsume(ir.args && ir.args[1], variateType);
+    return staticConsume(ir.args && ir.args[1], variateType, opts);
   }
   if (op === 'normalize' || op === 'truncate') {
-    return staticConsume(ir.args && ir.args[0], variateType);
+    return staticConsume(ir.args && ir.args[0], variateType, opts);
   }
   if (op === 'pushfwd') {
     return _consumePushfwd(ir, variateType);
@@ -958,7 +961,7 @@ function staticConsume(ir: any, variateType: any): StaticConsumeResult {
   }
   // --- iid(M, size) -------------------------------------------------
   if (op === 'iid') {
-    return _consumeIid(ir, variateType);
+    return _consumeIid(ir, variateType, !!(opts && opts.partial));
   }
   // --- select(branches, logweights) ---------------------------------
   // Engine-concepts §12: superpose / measure-ifelse / xs[i] all share
@@ -1108,7 +1111,7 @@ function _consumeJoint(ir: any, t: any): StaticConsumeResult {
   if (Array.isArray(ir.args) && ir.args.length > 0) {
     let cur: any = t;
     for (let i = 0; i < ir.args.length; i++) {
-      const sub = staticConsume(ir.args[i], cur);
+      const sub = staticConsume(ir.args[i], cur, { partial: i + 1 < ir.args.length });
       if (sub.error) return sub;
       // An unknown footprint cannot prove that the next component runs out.
       if (sub.deferred) return { logpType: T.REAL, rest: null, deferred: true };
@@ -1128,7 +1131,7 @@ function _consumeJoint(ir: any, t: any): StaticConsumeResult {
   return { logpType: T.REAL, rest: null, deferred: true };
 }
 
-function _consumeIid(ir: any, t: any): StaticConsumeResult {
+function _consumeIid(ir: any, t: any, partial = false): StaticConsumeResult {
   const args = ir.args || [];
   if (args.length !== 2) {
     return { logpType: T.REAL, rest: t,
@@ -1181,10 +1184,16 @@ function _consumeIid(ir: any, t: any): StaticConsumeResult {
     return { logpType: T.REAL, rest: null, deferred: true };
   }
   const lead = Array.isArray(t.shape) ? t.shape[0] : null;
-  if (typeof lead === 'number' && lead !== n) {
+  if (typeof lead === 'number' && (lead < n || (lead > n && !partial))) {
     return { logpType: T.REAL, rest: t,
       error: 'iid expects ' + n + ' elements, got variate with leading axis '
         + lead };
+  }
+  // Inside a positional joint the iid takes the next n entries of the
+  // leading axis and leaves the rest to its siblings (`joint(iid(D, 2),
+  // iid(D, 3))` at a length-5 vector).
+  if (typeof lead === 'number' && lead > n) {   // partial: n of lead
+    return { logpType: T.REAL, rest: T.array(t.rank, [lead - n, ...t.shape.slice(1)], t.elem) };
   }
   return { logpType: T.REAL, rest: null, deferred: typeof lead !== 'number' };
 }

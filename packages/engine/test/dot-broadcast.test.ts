@@ -121,11 +121,15 @@ test('nested / chained broadcast expressions', () => {
     ev('([1.0,2.0,3.0] .+ [1.0,1.0,1.0]) .* [2.0,2.0,2.0]'), [4, 6, 8]);
   assert.deepEqual(
     ev('([4.0,9.0,16.0] .^ 0.5) .- [1.0,1.0,1.0]'), [1, 2, 3]);
-  // comparison chain: a .< b .<= c  →  land(a .< b, b .<= c); each
-  // comparison broadcasts (→ length-1 arrays), the land combiner is
-  // the plain (scalar-callee) land applied elementwise.
-  assert.deepEqual(ev('[1.0] .< [2.0] .<= [2.0]'), [1]);
-  assert.deepEqual(ev('[1.0] .< [2.0] .<= [0.0]'), [0]);
+  // A chain `a .< b .<= c` lowers to `land(a .< b, b .<= c)` (§05): each
+  // comparison broadcasts, the combiner is the scalar `land`, so on arrays it
+  // is ill-typed and analysis refuses it. (Evaluated directly, the old `land`
+  // returned its second operand, which made [0] .< … .<= [1] read as [1].)
+  const { processSource } = require('../index.ts');
+  const errs = processSource('z = [1.0] .< [2.0] .<= [2.0]\n').diagnostics
+    .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
+  assert.ok(errs.some((m: string) => /land: arg 1 expects boolean, got array of boolean/.test(m)), errs.join('; '));
+  assert.deepEqual(ev('[1.0, 3.0] .< [2.0, 2.0]'), [1, 0]);
 });
 
 test('mixed plain + dotted in one expression', () => {
