@@ -1314,6 +1314,33 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
   return rest;
 }
 
+// §06: `bayesupdate(L, prior)` lowers to
+// `logweighted((x, p) -> logdensityof(p, x), prior, L)`. Build the node that
+// spelling reaches the walker as, with L applied at the consumed variate, and
+// score it with the logweighted rule, so a posterior scores wherever a
+// logweighted measure does.
+function walkBayesupdate(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+  let lik: any = ir.args && ir.args[0];
+  if (lik && lik.kind === 'ref' && lik.ns === 'self' && typeof opts.resolveMeasureRef === 'function') {
+    lik = opts.resolveMeasureRef(lik.name) || lik;
+  }
+  const kernel = lik && lik.kind === 'call' && lik.op === 'likelihoodof' ? lik.args[0] : null;
+  if (!kernel || kernel.kind !== 'call' || kernel.op !== 'functionof'
+      || !Array.isArray(kernel.params) || !kernel.body || lik.args.length !== 2) {
+    throw new Error('density: bayesupdate below the top level needs a likelihood '
+      + 'likelihoodof(functionof(…), obs); this likelihood form is an engine limitation here');
+  }
+  const { mapIR } = require('./ir-walk.ts');
+  const params = new Set<string>(kernel.params);
+  const x = { kind: 'ref', ns: '%local', name: '_x_' };
+  const body = mapIR(kernel.body, (n: any) => (n.kind === 'ref' && n.ns === 'self' && params.has(n.name)
+    ? { kind: 'call', op: 'get_field', args: [x, { kind: 'lit', value: n.name }] } : n));
+  const weight = { kind: 'call', op: 'functionof', params: ['_x_'],
+    body: { kind: 'call', op: 'logdensityof', args: [body, lik.args[1]] } };
+  const lowered = { kind: 'call', op: 'logweighted', args: [weight, ir.args[1]] } as unknown as IRNode;
+  return walkLogWeighted(lowered, value, refArrays, N, opts, acc, baseEnv, overlay);
+}
+
 function accumulateLogdensityFold(node: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, scratch: Float64Array) {
   if (node && node.kind === 'call' && node.op === 'add'
       && Array.isArray(node.args) && node.args.length === 2) {
@@ -4060,6 +4087,7 @@ function walkSuperpose(ir: IRNode, value: any, refArrays: any, N: any, opts: any
 const OP_HANDLERS = {
   weighted:    walkWeighted,
   logweighted: walkLogWeighted,
+  bayesupdate: walkBayesupdate,
   truncate:    walkTruncate,
   normalize:   walkNormalize,
   tilt:        walkTilt,
