@@ -2710,6 +2710,17 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
   if (jointSubs) {
     return { kind: 'joint_likelihood_density', subs: jointSubs, pointIR: obsIR } as any;
   }
+  // A measure built by weighted / logweighted / superpose over a NAMED
+  // posterior (`weighted(2.0, post)`): its density at θ is closed form in the
+  // components' densities (§06 — weighted adds log w, logweighted adds g,
+  // superpose sums densities), and a posterior component scores like the
+  // `logdensityof(post, θ)` case above. The density walker cannot score a
+  // posterior inline (its likelihood is a separate scoring pass), so the
+  // tree is carried here and combined per atom at materialise time.
+  const tree = _posteriorDensityTree(Mref, bindings, 0);
+  if (tree && tree.hasPosterior) {
+    return { kind: 'posterior_density_tree', tree: tree.node, pointIR: obsIR } as any;
+  }
   // Hold the obs IR — the materialiser resolves it to a concrete JS
   // value at sample time, consulting fixedValues for any binding
   // refs. Classification cares only that an obs argument exists in
@@ -2726,6 +2737,41 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
  * N atoms. Supported when M is a self-ref to a measure binding the
  * orchestrator can materialise (anything expandMeasureIR handles).
  */
+// The density tree of a measure over named posteriors, or null when some
+// node is outside weighted / logweighted / superpose / posterior / plain
+// measure binding. `hasPosterior` says whether any leaf is a posterior.
+function _posteriorDensityTree(ir: any, bindings: any, depth: number): { node: any; hasPosterior: boolean } | null {
+  if (depth > 32 || !ir) return null;
+  if (isSelfRef(ir)) {
+    const b = bindings.get(ir.name) as any;
+    if (!b || !b.ir) return null;
+    if (isCallOp(b.ir, 'bayesupdate', 2)) {
+      const Lref = b.ir.args[0], priorRef = b.ir.args[1];
+      if (!isSelfRef(priorRef) || !bindings.has(priorRef.name)) return null;
+      const plk = _resolveLikelihood(Lref, bindings);
+      if (plk) return { node: { op: 'posterior', priorName: priorRef.name, ...plk }, hasPosterior: true };
+      const subs = _resolveJointLikelihoodTerms(Lref, bindings);
+      if (subs) return { node: { op: 'posterior', priorName: priorRef.name, subs }, hasPosterior: true };
+      return null;
+    }
+    if (isCallOp(b.ir, 'weighted', 2) || isCallOp(b.ir, 'logweighted', 2) || (b.ir.kind === 'call' && b.ir.op === 'superpose')) {
+      return _posteriorDensityTree(b.ir, bindings, depth + 1);
+    }
+    return { node: { op: 'measure', name: ir.name }, hasPosterior: false };
+  }
+  if (isCallOp(ir, 'weighted', 2) || isCallOp(ir, 'logweighted', 2)) {
+    const inner = _posteriorDensityTree(ir.args[1], bindings, depth + 1);
+    if (!inner) return null;
+    return { node: { op: ir.op, weightIR: ir.args[0], inner: inner.node }, hasPosterior: inner.hasPosterior };
+  }
+  if (ir.kind === 'call' && ir.op === 'superpose' && Array.isArray(ir.args) && ir.args.length > 0) {
+    const parts = ir.args.map((a: any) => _posteriorDensityTree(a, bindings, depth + 1));
+    if (parts.some((p: any) => !p)) return null;
+    return { node: { op: 'superpose', parts: parts.map((p: any) => p.node) }, hasPosterior: parts.some((p: any) => p.hasPosterior) };
+  }
+  return null;
+}
+
 function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any): DerivationTotalmass | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
   const Mref = rhsIR.args[0];
@@ -4351,6 +4397,24 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       return true;
     }
     return false;
+  }
+  // Posterior density tree: every leaf obeys its own rule (a posterior leaf the
+  // posterior_density rule above, a measure leaf resolvability), and weights
+  // and the point θ must resolve.
+  if ((d as any).kind === 'posterior_density_tree') {
+    for (const r of dependencyRefs((d as any).pointIR)) if (!resolvable(r)) return false;
+    const ok = (node: any): boolean => {
+      if (node.op === 'posterior') {
+        return derivationRefsValid({ ...node, kind: 'posterior_density', pointIR: (d as any).pointIR } as any,
+          derivations, bindings, fixedValues, name);
+      }
+      if (node.op === 'measure') return resolvable(node.name);
+      if (node.op === 'weighted' || node.op === 'logweighted') {
+        return Array.from(dependencyRefs(node.weightIR)).every(resolvable) && ok(node.inner);
+      }
+      return node.parts.every(ok);
+    };
+    return ok((d as any).tree);
   }
   if (d.kind === 'totalmass') {
     return resolvable(d.measureName);

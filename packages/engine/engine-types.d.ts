@@ -265,7 +265,8 @@ export type DerivationKind =
   | 'binnedpoissonprocess'
   | 'likelihood_density'
   | 'joint_likelihood_density'
-  | 'posterior_density';
+  | 'posterior_density'
+  | 'posterior_density_tree';
 
 /**
  * Base derivation shape. Each per-kind interface below extends this
@@ -621,6 +622,17 @@ export interface DerivationPosteriorDensity {
   pointIR: IRNode;
 }
 
+/** `logdensityof(M, θ)` for M a weighted / logweighted / superpose tree over
+ *  named posteriors (spec §06 densities: weighted adds log w, logweighted adds
+ *  g, superpose sums). Leaves: `posterior` (the DerivationPosteriorDensity
+ *  payload) or `measure` (a binding scored by the generic logdensityof path). */
+export interface DerivationPosteriorDensityTree {
+  kind: 'posterior_density_tree';
+  name?: string;
+  tree: any;
+  pointIR: IRNode;
+}
+
 /** `totalmass(M)` — surface measure's tracked totalmass as scalar value. */
 export interface DerivationTotalmass {
   kind: 'totalmass';
@@ -764,6 +776,7 @@ export type Derivation =
   | DerivationLikelihoodDensity
   | DerivationJointLikelihoodDensity
   | DerivationPosteriorDensity
+  | DerivationPosteriorDensityTree
   | DerivationTotalmass
   | DerivationBroadcastLogdensity
   | DerivationSelect

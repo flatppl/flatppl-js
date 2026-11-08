@@ -3239,6 +3239,7 @@ const KIND_HANDLERS = {
   likelihood_density: (name: any, d: any, ctx: any) => density.matLikelihoodDensity(d, ctx),
   joint_likelihood_density: (name: any, d: any, ctx: any) => density.matJointLikelihoodDensity(d, ctx),
   posterior_density: (name: any, d: any, ctx: any) => density.matPosteriorDensity(d, ctx),
+  posterior_density_tree: (name: any, d: any, ctx: any) => density.matPosteriorDensityTree(d, ctx),
   broadcast_logdensity: (name: any, d: any, ctx: any) => density.matBroadcastLogdensity(d, ctx),
   totalmass:    (name: any, d: any, ctx: any) => density.matTotalmass(d, ctx),
   // jointchain/kchain: SOLE path is clmRerouteStage → lowerMeasure → matClm

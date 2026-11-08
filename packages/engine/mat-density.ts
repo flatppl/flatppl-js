@@ -2059,6 +2059,59 @@ function matPosteriorDensity(d: any, ctx: any) {
   });
 }
 
+// logdensityof(M, θ) for M a weighted / logweighted / superpose tree over named
+// posteriors. Spec §06: weighted(w, M) has density w·p_M, logweighted(g, M)
+// has density exp(g)·p_M, superpose(M₁, …) has density Σ p_Mᵢ. Posterior
+// leaves score through matPosteriorDensity, other leaves through the generic
+// logdensityof path, and the tree combines their per-atom log-densities.
+function matPosteriorDensityTree(d: any, ctx: any) {
+  const N = ctx.sampleCount;
+  const column = (m: any) => {
+    const s = m.samples, out = new Float64Array(N);
+    for (let i = 0; i < N; i++) out[i] = s[s.length === 1 ? 0 : i];
+    return out;
+  };
+  const scalarAt = (ir: any, what: string): number => {
+    const v = orchestrator.resolveIRToValue(ir, ctx.bindings, ctx.fixedValues, true);
+    const x = typeof v === 'number' ? v : (isValue(v) && v.data.length === 1 ? v.data[0] : null);
+    if (x == null || !Number.isFinite(x)) {
+      throw new Error('logdensityof over a posterior: the ' + what + ' must be a fixed number here; '
+        + 'a weight that depends on the variate or on a parameter is an engine limitation');
+    }
+    return x;
+  };
+  const score = (node: any): Promise<Float64Array> => {
+    if (node.op === 'posterior') {
+      return matPosteriorDensity({ ...node, pointIR: d.pointIR }, ctx).then(column);
+    }
+    if (node.op === 'measure') {
+      return matLogdensityof({ kind: 'logdensityof', measureName: node.name, obsIR: d.pointIR } as any, ctx).then(column);
+    }
+    if (node.op === 'weighted' || node.op === 'logweighted') {
+      let shift: number;
+      try {
+        const w = scalarAt(node.weightIR, node.op === 'weighted' ? 'weight' : 'log-weight');
+        shift = node.op === 'weighted' ? Math.log(w) : w;
+      } catch (err) { return Promise.reject(err); }
+      return score(node.inner).then((c) => { for (let i = 0; i < N; i++) c[i] += shift; return c; });
+    }
+    // superpose: log Σ exp(column), per atom.
+    return Promise.all(node.parts.map(score)).then((cols: Float64Array[]) => {
+      const out = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        let mx = -Infinity;
+        for (const c of cols) if (c[i] > mx) mx = c[i];
+        if (mx === -Infinity) { out[i] = -Infinity; continue; }
+        let s = 0;
+        for (const c of cols) s += Math.exp(c[i] - mx);
+        out[i] = mx + Math.log(s);
+      }
+      return out;
+    });
+  };
+  return score(d.tree).then((out) => scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N }));
+}
+
 // =====================================================================
 // Totalmass — surface the tracked logTotalmass as a per-atom value
 // =====================================================================
@@ -2471,6 +2524,7 @@ module.exports = {
   matLikelihoodDensity,
   matJointLikelihoodDensity,
   matPosteriorDensity,
+  matPosteriorDensityTree,
   matBroadcastLogdensity,
   matTotalmass,
   parseTruncationBox,
