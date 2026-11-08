@@ -81,6 +81,13 @@ const BINARY_ARITH_OPS = new Set(['add', 'sub', 'mul', 'div', 'mod', 'pow']);
 const UNARY_ARITH_OPS  = new Set([
   'neg', 'pos', 'abs', 'abs2', 'exp', 'log', 'log2', 'log10', 'sqrt',
   'sin', 'cos', 'floor', 'ceil', 'round',
+  'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+]);
+// §07 "Elementary functions" rows whose domain column lists `complexes`:
+// a complex argument gives a complex result.
+const COMPLEX_VALUED_OPS = new Set([
+  'exp', 'log', 'sqrt', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
 ]);
 const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
 // §07 "Elementary functions": "All accept scalar arguments and return scalar
@@ -4391,6 +4398,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const refused = operatorDomainError('neg', [aT], expr.loc);
       if (refused) return refused;
     }
+    // §07 lists only real domains for these rows (log2, log10, floor, …).
+    if (_leafPrim(aT) === 'complex' && !COMPLEX_VALUED_OPS.has(expr.op)
+        && !(expr.op === 'neg' || expr.op === 'pos' || expr.op === 'abs' || expr.op === 'abs2')) {
+      diagnostics.push({ severity: 'error', message: expr.op + ': arg 1 expects real, got complex', loc: args[0].loc });
+      return T.failed(expr.op + ' complex operand');
+    }
     // Scalar in → scalar out; array in → array out (shape preserved).
     // Per-op element-type rule:
     //   - INT_CAST  (floor/ceil/round): real → integer.
@@ -4405,7 +4418,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     //     commit 5c889a5's literal-fold workaround. With the
     //     element-type preserved we no longer need that workaround
     //     to clear the unification.
-    //   - REAL_ONLY (exp/log/log10/sqrt/sin/cos): always real.
+    //   - the rest: real, or complex for a complex argument of a
+    //     COMPLEX_VALUED_OPS row.
     const isIntCast    = (expr.op === 'floor' || expr.op === 'ceil' || expr.op === 'round');
     const isPreserving = (expr.op === 'neg' || expr.op === 'pos'
                           || expr.op === 'abs' || expr.op === 'abs2');
@@ -4419,6 +4433,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         return T.REAL;
       }
+      if (scalarPrim === 'complex' && COMPLEX_VALUED_OPS.has(expr.op)) return T.COMPLEX;
       return T.REAL;
     }
     function liftElemwise(t: any): any {
