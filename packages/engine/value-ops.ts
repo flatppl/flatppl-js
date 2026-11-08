@@ -1738,8 +1738,13 @@ function mulN(a: any, b: any, N: any, atomAxes?: readonly [boolean, boolean]) {
   // the same per-atom `mul`, with the shared operand whole in every atom.
   const sliceable = (v: any) => !isTransposeView(v) && !isComplexValue(v)
     && !valueLib.isDiagStored(v);
+  //
+  // Two batches of different cell shapes ([N,m,n] × [N,n,p]) are the same
+  // per-atom `mul` once the caller has proven both batched from reference
+  // provenance (`atomAxes`); from shape alone a shared operand whose first
+  // dimension equals N would be misread, so that case still needs equal shapes.
   if (N > 0 && (!aBatched || sliceable(a)) && (!bBatched || sliceable(b))
-      && (!aBatched || !bBatched || _sameShape(a.shape, b.shape))) {
+      && (!aBatched || !bBatched || (atomAxes && atomAxes[0] && atomAxes[1]) || _sameShape(a.shape, b.shape))) {
     return _perAtomMul(a, b, N, aBatched, bBatched);
   }
   // Other atom-batched cases land when needed.
