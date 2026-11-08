@@ -532,12 +532,36 @@ export function domainBoundsText(kwargOrder: string[], ranges: Record<string, { 
   return parts.length ? parts.join(', ') : '(no range)';
 }
 
+// A number literal as written, with an optional leading minus: `-3.0`
+// parses as a unary negation of the literal `3.0`.
+export function isNumberLiteralNode(v: any): boolean {
+  if (!v) return false;
+  if (v.type === 'NumberLiteral') return true;
+  return v.type === 'UnaryExpr' && v.op === '-' && !!v.operand && v.operand.type === 'NumberLiteral';
+}
+
+// The source text of a number or boolean literal node, verbatim, so an
+// unedited field keeps its spelling (`3.0` stays real, `3` stays integer).
+export function literalSourceText(v: any): string | null {
+  if (!v) return null;
+  if (v.type === 'NumberLiteral') return v.raw != null ? String(v.raw) : String(v.value);
+  if (v.type === 'BoolLiteral') return v.value ? 'true' : 'false';
+  if (isNumberLiteralNode(v)) return '-' + literalSourceText(v.operand);
+  return null;
+}
+
+// The value of a number literal node, negated literals included; else null.
+export function literalNumberValue(v: any): number | null {
+  if (!isNumberLiteralNode(v)) return null;
+  return v.type === 'NumberLiteral' ? v.value : -v.operand.value;
+}
+
 export function isPersistableSetField(v: any) {
   if (!v) return false;
   if (v.type === 'CallExpr' && v.callee && v.callee.name === 'interval'
       && Array.isArray(v.args) && v.args.length === 2
-      && v.args[0].type === 'NumberLiteral'
-      && v.args[1].type === 'NumberLiteral') return true;
+      && isNumberLiteralNode(v.args[0])
+      && isNumberLiteralNode(v.args[1])) return true;
   if (v.type === 'Identifier' && KNOWN_NAMED_SETS[v.name]) return true;
   // `cartpow(<base>, <n>)` for array-typed inputs: accept when the
   // base is itself a persistable scalar set field and the count is

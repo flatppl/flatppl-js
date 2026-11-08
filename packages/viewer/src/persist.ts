@@ -8,7 +8,7 @@
 import type { Ctx } from './types';
 import { activePresetFor, computeAutoValues, domainOverrideEntryFor, hasDomainOverrides, hasOverrides } from './overrides.js';
 
-import { isPersistableSetField } from './util.js';
+import { isNumberLiteralNode, isPersistableSetField, literalSourceText } from './util.js';
 export function formatScalarForSource(ctx: Ctx, v: unknown): string {
   if (typeof v === 'boolean') {
     // Canonical FlatPPL boolean spelling (spec §05).
@@ -26,10 +26,38 @@ export function formatScalarForSource(ctx: Ctx, v: unknown): string {
  * persists as `theta = [v1, …, vJ]` rather than dropping the
  * field or stringifying as `"1,2,3"`.
  */
-export function formatValueForSource(ctx: Ctx, v: unknown): string | null {
-  if (typeof v === 'boolean' || typeof v === 'number') {
-    if (!Number.isFinite(v) && typeof v === 'number') return null;
-    return formatScalarForSource(ctx, v);
+// A real value as a real literal (§03: an integer literal is an integer).
+export function formatRealForSource(v: number): string {
+  if (v === Infinity) return 'inf';
+  if (v === -Infinity) return '-inf';
+  const t = String(v);
+  return /^-?\d+$/.test(t) ? t + '.0' : t;
+}
+
+// The scalar prim of an input's declared type (the leaf of an array type):
+// 'integer', 'boolean', 'real', ... or null when the plan has no such input.
+export function inputPrimFor(plan: any, kwarg: string): string | null {
+  const inputs = (plan && plan.signature && plan.signature.inputs) || [];
+  for (const inp of inputs) {
+    if (inp.kwargName !== kwarg) continue;
+    let t = inp.type;
+    while (t && t.kind === 'array') t = t.elem;
+    return t && t.kind === 'scalar' ? t.prim : null;
+  }
+  return null;
+}
+
+function formatNumberForPrim(ctx: Ctx, v: number, prim: string | null): string {
+  if (prim === 'integer') return formatScalarForSource(ctx, v);
+  if (prim === 'boolean') return formatScalarForSource(ctx, !!v);
+  return formatRealForSource(v);
+}
+
+export function formatValueForSource(ctx: Ctx, v: unknown, prim: string | null = null): string | null {
+  if (typeof v === 'boolean') return formatScalarForSource(ctx, v);
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return null;
+    return formatNumberForPrim(ctx, v, prim);
   }
   if (Array.isArray(v) || (v != null && typeof v === 'object'
       && typeof (v as any).length === 'number'
@@ -40,7 +68,7 @@ export function formatValueForSource(ctx: Ctx, v: unknown): string | null {
     for (let i = 0; i < len; i++) {
       const e = (v as any)[i];
       if (typeof e !== 'number' || !Number.isFinite(e)) return null;
-      parts.push(formatScalarForSource(ctx, e));
+      parts.push(formatNumberForPrim(ctx, e, prim));
     }
     return '[' + parts.join(', ') + ']';
   }
@@ -111,14 +139,14 @@ export function canPersistActive(ctx: Ctx, plan: any): boolean {
         && Array.isArray(v.args) && v.args.length === 1) {
       v = v.args[0];
     }
-    if (v.type === 'NumberLiteral' || v.type === 'BoolLiteral') continue;
+    if (isNumberLiteralNode(v) || v.type === 'BoolLiteral') continue;
     // Array literal: every element must itself be a numeric literal
     // (no nested refs / calls — the preset must be self-contained
     // for edit-in-place persistence).
     if (v.type === 'ArrayLiteral' && Array.isArray(v.elements)) {
       let allLits = true;
       for (const el of v.elements) {
-        if (!el || (el.type !== 'NumberLiteral' && el.type !== 'BoolLiteral')) {
+        if (!el || (!isNumberLiteralNode(el) && el.type !== 'BoolLiteral')) {
           allLits = false; break;
         }
       }
@@ -147,7 +175,7 @@ export function buildPersistedPresetLine(ctx: Ctx, plan: any): string {
     if (override) {
       // Override may be a scalar or an array (array-typed inputs
       // persist via formatValueForSource as `[v1, …]`).
-      const t = formatValueForSource(ctx, active.values[kwarg]);
+      const t = formatValueForSource(ctx, active.values[kwarg], inputPrimFor(plan, kwarg));
       text = (t != null)
         ? t
         // Fall through to existing scalar path if value isn't
@@ -157,19 +185,14 @@ export function buildPersistedPresetLine(ctx: Ctx, plan: any): string {
         : formatScalarForSource(ctx, active.values[kwarg]);
     } else if (innerSrc && innerSrc.type === 'ArrayLiteral'
                && Array.isArray(innerSrc.elements)) {
-      // Source-form array literal — preserve it verbatim by
-      // formatting each element.
+      // Source-form array literal — preserve each element verbatim.
       const elemTexts: string[] = [];
       for (const el of innerSrc.elements) {
-        if (el && (el.type === 'NumberLiteral' || el.type === 'BoolLiteral')) {
-          elemTexts.push(formatScalarForSource(ctx, el.value));
-        } else {
-          elemTexts.push('null');   // unreachable per canPersistActive
-        }
+        elemTexts.push(literalSourceText(el) ?? 'null');   // null unreachable per canPersistActive
       }
       text = '[' + elemTexts.join(', ') + ']';
     } else {
-      text = formatScalarForSource(ctx, innerSrc && innerSrc.value);
+      text = literalSourceText(innerSrc) ?? formatScalarForSource(ctx, innerSrc && innerSrc.value);
     }
     if (wasFixed) text = 'fixed(' + text + ')';
     parts.push(kwarg + ' = ' + text);
@@ -214,7 +237,7 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
   const parts: string[] = [];
   for (const k in combined) {
     if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
-    const text = formatValueForSource(ctx, combined[k]);
+    const text = formatValueForSource(ctx, combined[k], inputPrimFor(plan, k));
     if (text == null) continue;   // unrepresentable value — skip kwarg
     parts.push(k + ' = ' + text);
   }
@@ -245,12 +268,10 @@ export function setFieldToSource(ctx: Ctx, v: any): string {
     // cartpow(<base>, <n>) — array-typed input. Round-trip the base
     // recursively (interval / named set) and the int-literal count.
     return 'cartpow(' + setFieldToSource(ctx, v.args[0]) + ', '
-      + formatScalarForSource(ctx, v.args[1].value) + ')';
+      + literalSourceText(v.args[1]) + ')';
   }
-  // interval(NumLit, NumLit)
-  return 'interval('
-    + formatScalarForSource(ctx, v.args[0].value) + ', '
-    + formatScalarForSource(ctx, v.args[1].value) + ')';
+  // interval(lo, hi) with literal bounds, kept as written.
+  return 'interval(' + literalSourceText(v.args[0]) + ', ' + literalSourceText(v.args[1]) + ')';
 }
 
 export function defaultSetSourceForKwarg(ctx: Ctx, plan: any, kwargName: string): string {
@@ -291,9 +312,7 @@ function formatSetDescriptor(ctx: Ctx, d: any): string {
     case 'booleans':        return 'booleans';
     case 'interval':
       if (d.lo === 0 && d.hi === 1) return 'unitinterval';
-      return 'interval('
-        + formatScalarForSource(ctx, d.lo) + ', '
-        + formatScalarForSource(ctx, d.hi) + ')';
+      return 'interval(' + formatRealForSource(d.lo) + ', ' + formatRealForSource(d.hi) + ')';
     case 'cartpow':
       return 'cartpow(' + formatSetDescriptor(ctx, d.base) + ', '
         + formatScalarForSource(ctx, d.n) + ')';
@@ -357,13 +376,13 @@ export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
           && Array.isArray(sa.value.args) && sa.value.args.length === 2
           && sa.value.args[1].type === 'NumberLiteral') {
         parts.push(kwarg + ' = cartpow(interval('
-          + formatScalarForSource(ctx, r.lo) + ', '
-          + formatScalarForSource(ctx, r.hi) + '), '
-          + formatScalarForSource(ctx, sa.value.args[1].value) + ')');
+          + formatRealForSource(r.lo) + ', '
+          + formatRealForSource(r.hi) + '), '
+          + literalSourceText(sa.value.args[1]) + ')');
       } else {
         parts.push(kwarg + ' = interval('
-          + formatScalarForSource(ctx, r.lo) + ', '
-          + formatScalarForSource(ctx, r.hi) + ')');
+          + formatRealForSource(r.lo) + ', '
+          + formatRealForSource(r.hi) + ')');
       }
     } else {
       parts.push(kwarg + ' = ' + setFieldToSource(ctx, sa.value));
