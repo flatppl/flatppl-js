@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { hostTripleForNode, chooseLspSource } from './build-lsp-source.cjs';
 import { provisionWasmApi } from '../web/provision-wasm-api.mjs';
+import { fetchArchiveTree } from '../web/scripts/github-download.mjs';
 import { readZstdWasm } from '../share/zstd-wasm.mjs';
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
@@ -65,7 +66,7 @@ const grammarsSibling = process.env.GRAMMARS_DIR || join(dirname(repoRoot), 'fla
 // is the canonical form GitHub documents and which `<bare-ref>.tar.gz`
 // shortcuts no longer reliably support.
 const grammarsPin = 'main';
-const grammarsRemote = `https://github.com/flatppl/flatppl-grammars/archive/refs/heads/${grammarsPin}.tar.gz`;
+const grammarsArchive = { owner: 'flatppl', repo: 'flatppl-grammars', ref: grammarsPin };
 
 const WATCH = process.argv.includes('--watch');
 
@@ -697,7 +698,7 @@ async function syncGrammars() {
     }
   } else {
     console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
-    await fetchAndExtractGrammars(grammarsRemote, gramDir);
+    await fetchAndExtractGrammars(grammarsArchive, gramDir);
   }
 }
 
@@ -716,62 +717,18 @@ async function copyDirRecursive(srcDir, dstDir) {
   }
 }
 
-async function fetchAndExtractGrammars(url, dstDir) {
-  // Pull the tarball, write to a temp file, extract the whole archive to a
-  // temp directory, then copy the `textmate/` subdir into dstDir. This
-  // two-step "extract then copy" approach avoids portability issues with
-  // tar's wildcard handling — GNU tar requires `--wildcards` to expand
-  // patterns in member names, while bsdtar / macOS tar handles them
-  // differently. Letting tar extract everything and using JS to pick the
-  // wanted subdir works the same on every platform.
-  // (tmpdir/spawn are imported at the top of this module.)
-
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) {
-    throw new Error(`failed to fetch grammars: ${res.status} ${res.statusText} ${url}`);
-  }
-
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const tmpFile = join(tmpdir(), `flatppl-grammars-${stamp}.tar.gz`);
-  const tmpExtract = join(tmpdir(), `flatppl-grammars-${stamp}`);
-
+async function fetchAndExtractGrammars(archive, dstDir) {
+  // Download (with the REST API fallback), extract to a temp dir, copy the
+  // wanted subdirs. The archive's single top directory holds the repo.
+  const { topLevel, cleanup } = await fetchArchiveTree({ ...archive, prefix: 'flatppl-grammars-', log: (m) => console.log('  ' + m) });
   try {
-    // Buffer the response to disk. Tarballs from GitHub archives are small
-    // (<1 MB for grammar repos), so a single in-memory ArrayBuffer is fine.
-    const buf = Buffer.from(await res.arrayBuffer());
-    await writeFile(tmpFile, buf);
-
-    // Extract the whole archive to a temp directory. tar -xzf is universally
-    // supported across GNU tar, bsdtar, macOS, Windows-with-MSYS, and the
-    // CI ubuntu-latest runners.
-    await mkdir(tmpExtract, { recursive: true });
-    await new Promise((resolve, reject) => {
-      const tar = spawn('tar', ['-xzf', tmpFile, '-C', tmpExtract], {
-        stdio: ['ignore', 'inherit', 'inherit'],
-      });
-      tar.on('error', reject);
-      tar.on('exit', code =>
-        code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))
-      );
-    });
-
-    // GitHub archives unpack into a single top-level directory named
-    // `<repo>-<ref>/`. Find it (it's the only entry) and copy its
-    // textmate/ subdir over.
-    const entries = await readdir(tmpExtract);
-    if (entries.length === 0) {
-      throw new Error(`grammar archive extracted empty: ${tmpExtract}`);
-    }
-    const topLevel = join(tmpExtract, entries[0]);
     await copyDirRecursive(join(topLevel, 'textmate'), join(dstDir, 'textmate'));
     await copyDirRecursive(join(topLevel, 'codemirror'), join(dstDir, 'codemirror'));
     if (existsSync(join(topLevel, 'cspell'))) {
       await copyDirRecursive(join(topLevel, 'cspell'), join(dstDir, 'cspell'));
     }
   } finally {
-    // Best-effort cleanup; leave artifacts in place if anything errors.
-    await rm(tmpFile,    { force: true }).catch(() => {});
-    await rm(tmpExtract, { recursive: true, force: true }).catch(() => {});
+    await cleanup();
   }
 }
 
