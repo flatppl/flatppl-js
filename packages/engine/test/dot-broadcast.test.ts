@@ -121,15 +121,45 @@ test('nested / chained broadcast expressions', () => {
     ev('([1.0,2.0,3.0] .+ [1.0,1.0,1.0]) .* [2.0,2.0,2.0]'), [4, 6, 8]);
   assert.deepEqual(
     ev('([4.0,9.0,16.0] .^ 0.5) .- [1.0,1.0,1.0]'), [1, 2, 3]);
-  // A chain `a .< b .<= c` lowers to `land(a .< b, b .<= c)` (§05): each
-  // comparison broadcasts, the combiner is the scalar `land`, so on arrays it
-  // is ill-typed and analysis refuses it. (Evaluated directly, the old `land`
-  // returned its second operand, which made [0] .< … .<= [1] read as [1].)
-  const { processSource } = require('../index.ts');
-  const errs = processSource('z = [1.0] .< [2.0] .<= [2.0]\n').diagnostics
-    .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
-  assert.ok(errs.some((m: string) => /land: arg 1 expects boolean, got array of boolean/.test(m)), errs.join('; '));
   assert.deepEqual(ev('[1.0, 3.0] .< [2.0, 2.0]'), [1, 0]);
+});
+
+// §05: dotted operators are broadcast sugar and a comparison chain lowers to
+// `land`, so an all-dotted chain is the broadcast of the chain.
+const A = '[1.0, 1.0, 3.0]', B = '[2.0, 2.0, 2.0]', C = '[3.0, 2.0, 1.0]', D = '[4.0, 1.0, 0.0]';
+
+test('a three-operand dotted chain is land.(a .< b, b .<= c)', () => {
+  const chain = ev(`${A} .< ${B} .<= ${C}`);
+  assert.deepEqual(chain, ev(`land.(${A} .< ${B}, ${B} .<= ${C})`));
+  // 1 < 2 <= 3, 1 < 2 <= 2, but not 3 < 2.
+  assert.deepEqual(chain, [1, 1, 0]);
+  const { processSource } = require('../index.ts');
+  assert.deepEqual(processSource(`z = ${A} .< ${B} .<= ${C}\n`).diagnostics
+    .filter((d: any) => d.severity === 'error'), []);
+});
+
+test('a dotted chain matches the hand-computed elementwise chain', () => {
+  // a = [1, 5, 2], b = [2, 4, 2], c = [3, 6, 1]: 1 < 2 <= 3 holds; 5 < 4 fails;
+  // 2 < 2 fails. So [true, false, false], which land reports as [1, 0, 0].
+  assert.deepEqual(ev('[1.0, 5.0, 2.0] .< [2.0, 4.0, 2.0] .<= [3.0, 6.0, 1.0]'), [1, 0, 0]);
+});
+
+test('a four-operand dotted chain nests left', () => {
+  const chain = ev(`${A} .< ${B} .<= ${C} .> ${D}`);
+  assert.deepEqual(chain, ev(`land.(land.(${A} .< ${B}, ${B} .<= ${C}), ${C} .> ${D})`));
+  // The last comparison 3 > 4 fails in the first cell.
+  assert.deepEqual(chain, [0, 1, 0]);
+});
+
+test('a chain that mixes dotted and plain comparisons is refused at the differing operator', () => {
+  for (const [src, op] of [['y = a .< b <= c', '<='], ['y = a < b .<= c', '.<='], ['y = a .< b .<= c < d', '<']]) {
+    const { tokens } = tokenize(src, { variant: 'flatppl' });
+    const diag = (parse(tokens, V).diagnostics || [])
+      .find((d: any) => /a comparison chain mixes dotted and plain comparisons/.test(d.message));
+    assert.ok(diag, src);
+    const ops = tokens.filter((t: any) => t.value === op || (t.dotted && '.' + t.value === op));
+    assert.deepEqual(diag.loc, ops[ops.length - 1].loc, src);
+  }
 });
 
 test('mixed plain + dotted in one expression', () => {
