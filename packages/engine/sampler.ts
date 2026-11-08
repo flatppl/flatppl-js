@@ -3329,9 +3329,12 @@ function evaluateCall(ir: any, env: any): any {
                            : evaluateExpr(ir.args[1], env);
     // Unwrap shape-explicit Value → underlying typed-array view.
     const coeffs = valueLib.isValue(coeffsRaw) ? coeffsRaw.data : coeffsRaw;
-    // Σ a_i · x^i, evaluated Horner-style for numerical stability.
-    let acc = 0;
-    for (let i = coeffs.length - 1; i >= 0; i--) acc = acc * x + coeffs[i];
+    // Σ a_i · x^i, evaluated Horner-style for numerical stability. The seed
+    // is the top coefficient: seeding 0 makes the first step 0 · x, which is
+    // NaN at x = ±inf where the polynomial is ±inf.
+    if (coeffs.length === 0) return 0;
+    let acc = coeffs[coeffs.length - 1];
+    for (let i = coeffs.length - 2; i >= 0; i--) acc = acc * x + coeffs[i];
     return acc;
   }
   if (op === 'bernstein') {
