@@ -1421,7 +1421,7 @@ function _scanLogical(ir: any, ctx: any): any {
   // instead of coercing them to NaN in a numeric buffer.
   const out: any[] = new Array(n);
   // An empty scan never evaluates its body, including during compilation.
-  if (n === 0) return _vectorFromElements(out);
+  if (n === 0) return _isRecordState(init) ? _emptyRowsLike(init) : _vectorFromElements(out);
   let plan = scanPlans.get(fn.body);
   if (!plan) {
     // Lazy import: declarations load before sampler initialises the compiler.
@@ -1440,10 +1440,29 @@ function _scanLogical(ir: any, ctx: any): any {
       acc = plan.evalPoint(elemEnv);
       out[i] = acc;
     }
+    // §06 makes record trajectories of kscan, "a stochastic version of scan",
+    // tables, so record states collect into a table, as a record broadcast does.
+    if (_isRecordState(out[0])) {
+      return require('./broadcast-shape.ts').tryCollectTableRows(out, [n]);
+    }
     return _vectorFromElements(out);
   } finally {
     plan.clearMemo();
   }
+}
+
+function _isRecordState(v: any): boolean {
+  return !!v && typeof v === 'object' && !Array.isArray(v) && !ArrayBuffer.isView(v)
+    && !valueLib.isValue(v) && !v.__table__ && !require('./sampler-complex.ts')._isComplex(v);
+}
+
+/** The empty table whose rows would have the fields of record `init`. */
+function _emptyRowsLike(init: any): any {
+  const columns: Record<string, any> = {};
+  for (const [name, field] of Object.entries(init)) {
+    columns[name] = _isRecordState(field) ? _emptyRowsLike(field) : [];
+  }
+  return { __table__: true, columns, nrows: 0 };
 }
 
 ops.register({
