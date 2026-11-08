@@ -2233,6 +2233,10 @@ function _pushfwdInverseAtomIndependent(bij: any, y: any, baseEnv: any, overlay:
 // A bijection maps its variate space onto itself (§06), so f_inv(y) has the
 // shape of y: a scalar for a scalar variate, a dense array otherwise.
 function pushfwdPreimage(y: any, x: any): any {
+  // A pushforward may change the variate space (§04 relabel maps reals onto
+  // records), so a record preimage is the base's variate; the base walk checks
+  // its structure.
+  if (isRecordValue(x)) return x;
   if (!valueLib.isValue(y)) {
     if (typeof x === 'number') return x;
     if (valueLib.isValue(x) && x.shape.length === 0) {
@@ -2277,6 +2281,9 @@ function arrayVariateShape(ir: any, env: any): number[] | null {
 // Take the pushforward's variate off the head of `value`: a scalar, or one
 // whole array of the base's shape.
 function consumePushfwdVariate(baseIR: any, value: any, env: any): { head: any; rest: any } {
+  // A record-valued pushforward (§04 relabel(M, names) ≡ pushfwd(fn(relabel(_,
+  // names)), M) is one) takes the whole record point as its variate.
+  if (isRecordValue(value)) return { head: value, rest: null };
   const shape = arrayVariateShape(baseIR, env);
   if (!shape) return consumeScalar(value);
   if (valueLib.isValue(value) && value.shape.length === shape.length
@@ -2778,7 +2785,9 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   }
   // Recurse on M scoring at x. x is atom-independent → walks through
   // M's structure with the standard consume/rest semantics.
-  const baseRest = walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
+  const baseRest = isRecordValue(x)
+    ? walkRecordPreimage(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay)
+    : walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
   if (typeof x !== 'number') preimageFullyConsumed(baseRest);
   if (counting) return rest;
   const lv = pushfwdLogVolume(bij.logVolume, x, Object.assign({}, baseEnv, overlay));
@@ -2786,11 +2795,32 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   return rest;
 }
 
+// §06: f_inv returns a variate of the base measure. A record preimage the base
+// cannot consume is the user's inverse disagreeing with the base, so say that
+// rather than surface the walker's consume step.
+function walkRecordPreimage(M_ir: any, x: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  try {
+    return walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
+  } catch (e: any) {
+    if (!/^density: (cannot consume|record missing field)/.test(String(e && e.message))) throw e;
+    throw new Error('pushfwd: the bijection\'s inverse returned a record with fields '
+      + Object.keys(x).join(', ') + ', which is not a variate of the base measure; '
+      + 'f_inv must return the base measure\'s variates (spec §06 pushfwd)');
+  }
+}
+
 // A point y whose preimage f_inv(y) is NaN lies outside the image of f
 // (log of a non-positive number), where the pushforward has density 0.
 function outsideImage(y: any, x: any): boolean {
-  if (typeof x === 'number') return Number.isNaN(x) && !Number.isNaN(y);
-  return x.data.some(Number.isNaN) && !y.data.some(Number.isNaN);
+  return hasNaN(x) && !hasNaN(y);
+}
+
+function hasNaN(v: any): boolean {
+  if (typeof v === 'number') return Number.isNaN(v);
+  if (valueLib.isValue(v)) return v.data.some(Number.isNaN);
+  if (Array.isArray(v)) return v.some(hasNaN);
+  if (isRecordValue(v)) return Object.values(v).some(hasNaN);
+  return false;
 }
 
 // A point already at -Infinity (zero base density) stays there; subtracting an
