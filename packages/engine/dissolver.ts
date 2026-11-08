@@ -2210,6 +2210,11 @@ function _argSizeIdentifier(arg: any, bindings: any): number | string {
     }
     return arg.name;
   }
+  // An array literal (`[a, a]` inside a kernel body) has its length in
+  // the IR; another expression may carry its inferred array type.
+  if (arg.kind === 'call' && arg.op === 'vector' && Array.isArray(arg.args)) return arg.args.length;
+  const t = arg.meta && arg.meta.type;
+  if (t && t.kind === 'array' && Array.isArray(t.shape) && typeof t.shape[0] === 'number') return t.shape[0];
   return '%dynamic';
 }
 

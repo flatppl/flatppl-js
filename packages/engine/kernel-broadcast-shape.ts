@@ -95,6 +95,22 @@ interface IidKernelDescriptor {
 // result. Without this, lambda-form kernels miss every recogniser, fall
 // through to a value `evaluate`, and crash on the measure op in the
 // sampler ("call op 'iid' not evaluable in sampler context").
+// A distribution call's arguments by parameter name. A measure-returning
+// lambda writes the dist POSITIONALLY (`Normal(a, 0.1)`), the kernelof/lift
+// form with kwargs (`Normal(mu = a, sigma = 0.1)`). The composite executors
+// read params by name, so map positional args onto `distParams` in order
+// (kwargs win on overlap). With no REGISTRY loaded (classify-time yes/no
+// only) `distParams` is empty and positional args stay unnamed — that
+// caller ignores the result.
+function namedDistArgs(kwargs: any, args: any, distParams: string[]): Record<string, any> {
+  const out: Record<string, any> = Object.assign({}, kwargs || {});
+  const pos = Array.isArray(args) ? args : [];
+  for (let i = 0; i < pos.length && i < distParams.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(out, distParams[i])) out[distParams[i]] = pos[i];
+  }
+  return out;
+}
+
 function _peelKernelBody(body: any): any {
   if (!body || body.kind !== 'call') return null;
   if (body.op === 'lawof') return (body.args && body.args[0]) || null;
@@ -195,13 +211,7 @@ function detectIidKernelBinding(
   // win on overlap). When the sampler REGISTRY wasn't loaded (classify-
   // time yes/no only), `distParams` is empty and positional args can't
   // be named yet — harmless, since that caller ignores `distKwargs`.
-  const distKwargs: Record<string, any> = Object.assign({}, distCall.kwargs || {});
-  const posArgs = Array.isArray(distCall.args) ? distCall.args : [];
-  for (let i = 0; i < posArgs.length && i < distParams.length; i++) {
-    if (!Object.prototype.hasOwnProperty.call(distKwargs, distParams[i])) {
-      distKwargs[distParams[i]] = posArgs[i];
-    }
-  }
+  const distKwargs = namedDistArgs(distCall.kwargs, distCall.args, distParams);
   return {
     binding: b,
     params,
@@ -412,7 +422,7 @@ function detectJointKernelBinding(
       surfaceName: surfaceNames[i],
       distOp: op,
       distParams,
-      distKwargs: distCall.kwargs || {},
+      distKwargs: namedDistArgs(distCall.kwargs, distCall.args, distParams),
       isVectorOutput: isVectorOutput,
       eventDim: eventDim,
     });
@@ -648,7 +658,9 @@ function detectJointChainKernelBinding(
       const dep = bindings.get(arg.name);
       if (!dep || !dep.ir) return null;
       node = dep.ir;
-    } else if (i === 0 && arg.kind === 'call') {
+    } else if (arg.kind === 'call' && (i === 0 || arg.op === 'functionof')) {
+      // Inline: the base DistCall, or a later step written in place as
+      // `fn(Normal(_, 0.1))` rather than through a kernel binding.
       node = arg;
     } else {
       return null;
@@ -664,7 +676,7 @@ function detectJointChainKernelBinding(
         base: {
           distOp: distCall.op,
           distParams,
-          distKwargs: distCall.kwargs || {},
+          distKwargs: namedDistArgs(distCall.kwargs, distCall.args, distParams),
         },
       });
     } else {
@@ -690,7 +702,7 @@ function detectJointChainKernelBinding(
           inputParam: stepParams[0],
           distOp: stepDist.op,
           distParams,
-          distKwargs: stepDist.kwargs || {},
+          distKwargs: namedDistArgs(stepDist.kwargs, stepDist.args, distParams),
         },
       });
     }
@@ -721,14 +733,10 @@ function isJointChainCompositeKernelBinding(
  * to an undefined reply and an internal `TypeError` — a spec-legal program with
  * no diagnostic and no located message.
  *
- * The one shape judged here is an inline step kernel past the base. The base
- * (argument 1) may be written inline because a placeholder-bearing measure call
- * cannot be hoisted to a module-level anon binding, but a step is read through
- * its binding: §11 "Reified callables" spells a reification's input as a
- * `<ref>` that "refers to a node in the ancestor subgraph of `<output>`", and
- * the executor threads step k's previous variate through that named node.
- * Binding the step kernel to a name is always available and changes no
- * semantics.
+ * The one shape judged here is a step past the base that is neither a kernel
+ * binding nor an inline `functionof` (e.g. a bare measure call). Steps are
+ * kernels: the executor threads step k's previous variate through the step's
+ * input, which a measure call does not have.
  *
  * Reads the same `bindings` map and the same peel (`_peelKernelBody`) the
  * recogniser reads, so the message and the classification cannot disagree.
@@ -751,7 +759,7 @@ function checkJointChainKernelSteps(bindings: any): any[] {
     if (!Array.isArray(args)) continue;
     for (let i = 1; i < args.length; i++) {
       const arg = args[i];
-      if (arg && arg.kind === 'ref') continue;
+      if (arg && (arg.kind === 'ref' || (arg.kind === 'call' && arg.op === 'functionof'))) continue;
       out.push({
         name,
         severity: 'error',
@@ -896,14 +904,6 @@ function detectNestedBroadcastKernelBinding(
   // composite-bodied inner kernel — defer to a follow-up).
   if (bindings.has(head.name)) return null;
 
-  // Inner broadcast must use kwargs for inner params (positional form
-  // is a follow-up; canonical post-lift surface is kwargs).
-  const innerKwargs = innerMeasure.kwargs;
-  if (!innerKwargs || typeof innerKwargs !== 'object'
-      || Object.keys(innerKwargs).length === 0) return null;
-  // Reject extra positional args beyond the head.
-  if (innerMeasure.args.length > 1) return null;
-
   let innerDistParams: string[] = [];
   if (isScalarSampleable) {
     try {
@@ -916,6 +916,12 @@ function detectNestedBroadcastKernelBinding(
     } catch (_) { /* sampler not loadable; leave distParams empty for
                        classify-time conservatism */ }
   }
+  // Inner params by name: `Normal.(xs, 0.1)` passes them positionally
+  // after the head, `broadcast(Normal, mu = xs, sigma = 0.1)` by keyword.
+  const innerPos = innerMeasure.args.slice(1);
+  if (innerPos.length > 0 && innerPos.length > innerDistParams.length) return null;
+  const innerKwargs = namedDistArgs(innerMeasure.kwargs, innerPos, innerDistParams);
+  if (Object.keys(innerKwargs).length === 0) return null;
   // Inner event dim. For vector-output inner dists, attempt the
   // literal-array unwrap via the joint detector's helper (mu IR
   // sees the inner kwargs which mix outer placeholders + closed
