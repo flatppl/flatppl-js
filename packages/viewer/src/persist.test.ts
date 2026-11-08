@@ -1,0 +1,133 @@
+// @ts-nocheck — test file; compiled separately by node --test (not by tsc)
+import { registerHooks } from 'node:module';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.endsWith('.js') && context.parentURL?.includes('/packages/viewer/src/')) {
+      return nextResolve(specifier.slice(0, -3) + '.ts', context);
+    }
+    return nextResolve(specifier, context);
+  }
+});
+
+const require_ = createRequire(import.meta.url);
+const { processSource } = require_('@flatppl/engine');
+const { persistNamedDomain, persistNamedPreset } = await import('./persist.ts');
+
+// The web host's editSource (packages/web/src/app.ts): 0-based lines, the
+// column added to the line start without clamping.
+function applyEdit(src, args) {
+  const lineStarts = [0];
+  for (let i = 0; i < src.length; i++) if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
+  const off = (loc) => (lineStarts[loc.line] ?? 0) + (loc.col || 0);
+  return src.slice(0, off(args.range.start)) + args.newText + src.slice(off(args.range.end));
+}
+
+function ctxFor(src) {
+  const edits = [];
+  const ctx = {
+    currentBindings: processSource(src).bindings,
+    domainOverrides: new Map(),
+    presets: new Map(),
+    host: { editSource: (args) => { edits.push(args); } },
+  };
+  return { ctx, edits };
+}
+
+test('persistNamedDomain replaces exactly the cartprod binding', () => {
+  const src = [
+    'mu ~ Normal(0.0, 1.0)',
+    'sigma ~ Exponential(1.0)',
+    'box = cartprod(mu = interval(-1.5, 1.5), sigma = interval(0.25, 2.5))',
+    'z = 1.0',
+    '',
+  ].join('\n');
+  const { ctx, edits } = ctxFor(src);
+  ctx.domainOverrides.set('box', { ranges: { mu: { lo: -2.5, hi: 2.5 } } });
+  persistNamedDomain(ctx, { domainName: 'box' });
+  assert.equal(edits.length, 1);
+  const out = applyEdit(src, edits[0]);
+  assert.equal(out, [
+    'mu ~ Normal(0.0, 1.0)',
+    'sigma ~ Exponential(1.0)',
+    'box = cartprod(mu = interval(-2.5, 2.5), sigma = interval(0.25, 2.5))',
+    'z = 1.0',
+    '',
+  ].join('\n'));
+  // Round trip: the edited source analyses cleanly and keeps every binding.
+  const after = processSource(out);
+  assert.deepEqual(after.diagnostics.filter((d) => d.severity === 'error'), []);
+  assert.deepEqual([...after.bindings.keys()].sort(), ['box', 'mu', 'sigma', 'z']);
+});
+
+test('persistNamedDomain on the first line leaves the rest intact', () => {
+  const src = 'box = cartprod(a = interval(0.0, 1.0))\nx = 2.0\n';
+  const { ctx, edits } = ctxFor(src);
+  ctx.domainOverrides.set('box', { ranges: { a: { lo: 0.5, hi: 0.75 } } });
+  persistNamedDomain(ctx, { domainName: 'box' });
+  assert.equal(applyEdit(src, edits[0]), 'box = cartprod(a = interval(0.5, 0.75))\nx = 2.0\n');
+});
+
+const { orchestrator } = require_('@flatppl/engine');
+const { canPersistActive, canPersistDomain, persistActive } = await import('./persist.ts');
+
+function presetCtx(src, name) {
+  const { ctx, edits } = ctxFor(src);
+  ctx.presetOverrides = new Map();
+  ctx.host.canPersist = () => true;
+  const built = orchestrator.buildDerivations(processSource(src).bindings);
+  const plan = { name, presetName: null, signature: orchestrator.signatureOf(name, built.bindings) };
+  return { ctx, edits, plan };
+}
+
+test('a real input persists as a real literal, an integer input as an integer literal', () => {
+  const src = [
+    'theta ~ Normal(0.0, 1.0)',
+    'n ~ Poisson(3.0)',
+    'y ~ Normal(theta * n, 1.0)',
+    'K = kernelof(record(y = y), theta = theta, n = n)',
+    'L = likelihoodof(K, record(y = 0.3))',
+    'pt = record(theta = 0.5, n = 2)',
+    'box = cartprod(theta = interval(0.5, 1.5), n = interval(0, 9))',
+    '',
+  ].join('\n');
+  const { ctx, edits, plan } = presetCtx(src, 'L');
+  assert.deepEqual(plan.signature.inputs.map((i) => [i.kwargName, i.type.prim]), [['theta', 'real'], ['n', 'integer']]);
+  // Whole-number slider values: theta must stay real, n integer (§03 literal types).
+  plan.presetName = 'pt';
+  plan.matchedPresets = [{ name: 'pt', values: { theta: 0.5, n: 2 } }];
+  ctx.presetOverrides.set('pt', { values: { theta: 2, n: 4 } });
+  persistActive(ctx, plan);
+  ctx.domainOverrides.set('box', { ranges: { theta: { lo: -1, hi: 3 } } });
+  persistNamedDomain(ctx, { domainName: 'box' });
+  let out = src;
+  for (const e of edits.slice().reverse()) out = applyEdit(out, e);
+  assert.match(out, /^pt = record\(theta = 2\.0, n = 4\)$/m);
+  // Interval bounds are reals; the unedited field keeps its spelling.
+  assert.match(out, /^box = cartprod\(theta = interval\(-1\.0, 3\.0\), n = interval\(0, 9\)\)$/m);
+  assert.deepEqual(processSource(out).diagnostics.filter((d) => d.severity === 'error'), []);
+});
+
+test('negative literal bounds and preset values can be persisted', () => {
+  const src = [
+    'mu ~ Normal(0.0, 1.0)',
+    'y ~ Normal(mu, 1.0)',
+    'K = kernelof(record(y = y), mu = mu)',
+    'L = likelihoodof(K, record(y = 0.3))',
+    'pt = record(mu = -1.5)',
+    'box = cartprod(mu = interval(-3.0, 3.0))',
+    '',
+  ].join('\n');
+  const { ctx, edits, plan } = presetCtx(src, 'L');
+  plan.presetName = 'pt';
+  plan.domainName = 'box';
+  ctx.presetOverrides.set('pt', { values: { mu: -0.25 } });
+  ctx.domainOverrides.set('box', { ranges: { mu: { lo: -2.5, hi: 1.5 } } });
+  assert.equal(canPersistActive(ctx, plan), true, 'a negated literal preset field is persistable');
+  assert.equal(canPersistDomain(ctx, plan), true, 'a negated literal bound is persistable');
+  persistNamedDomain(ctx, plan);
+  assert.equal(applyEdit(src, edits[0]).split('\n')[5], 'box = cartprod(mu = interval(-2.5, 1.5))');
+});
