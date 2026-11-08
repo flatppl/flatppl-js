@@ -2479,6 +2479,67 @@ function _superposeComponentWeights(p: any) {
 // are scalar-atom (or do not agree on one stride, which keeps the pooled
 // fallback). `sc` is the output atom count, so a component of `m · sc` samples
 // holds `m` values per atom.
+function _isStructuredMeasure(m: any): boolean {
+  return !!m && m.samples == null && (m.fields != null || Array.isArray(m.elems));
+}
+
+// A stand-in for a structured component: its "sample" at atom i encodes
+// (component, atom) as pi·n + i, and it carries the component's weights and
+// mass, so the selection and weight code below treats it like a scalar one.
+function _superposeIndexProxy(m: any, pi: number, n: number): any {
+  const samples = new Float64Array(n);
+  for (let i = 0; i < n; i++) samples[i] = pi * n + i;
+  const proxy: any = { samples, logWeights: m.logWeights || null };
+  if (m.logTotalmass !== undefined) proxy.logTotalmass = m.logTotalmass;
+  if (m.n_eff !== undefined) proxy.n_eff = m.n_eff;
+  if (m._atomMassWeights) proxy._atomMassWeights = m._atomMassWeights;
+  return proxy;
+}
+
+// Rebuild a structured measure from the selected (component, atom) codes:
+// every leaf of component c contributes its atom-a block.
+function _gatherStructured(components: any[], codes: Float64Array, n: number, name: string): any {
+  const pick = (k: number) => [Math.floor(codes[k] / n), codes[k] % n];
+  const leaf = (ms: any[], path: string): any => {
+    const m0 = ms[0];
+    if (m0.fields) {
+      const keys = Object.keys(m0.fields);
+      const fields: any = {};
+      for (const k of keys) {
+        if (!ms.every((m: any) => m.fields && m.fields[k])) {
+          throw new Error("superpose '" + name + "': the record components do not share field '"
+            + path + k + "' (spec §06: one variate space)");
+        }
+        fields[k] = leaf(ms.map((m: any) => m.fields[k]), path + k + '.');
+      }
+      return empirical.recordMeasure(fields, null);
+    }
+    if (Array.isArray(m0.elems)) {
+      return empirical.tupleMeasure(m0.elems.map((_: any, j: number) => leaf(ms.map((m: any) => m.elems[j]), path + j + '.')), null);
+    }
+    const v0 = m0.value;
+    if (v0 && Array.isArray(v0.shape) && v0.shape[0] === n && !v0.im) {
+      const block = v0.data.length / n;
+      const data = new Float64Array(n * block);
+      for (let k = 0; k < n; k++) {
+        const [c, a] = pick(k);
+        const src = ms[c].value.data;
+        for (let j = 0; j < block; j++) data[k * block + j] = src[a * block + j];
+      }
+      const out = Object.assign({}, v0, { data });
+      return measureFromValue(out, {});
+    }
+    if (m0.samples && m0.samples.length === n) {
+      const data = new Float64Array(n);
+      for (let k = 0; k < n; k++) { const [c, a] = pick(k); data[k] = ms[c].samples[a]; }
+      return scalarMeasureN(data, {});
+    }
+    throw new Error("superpose '" + name + "': field '" + path.replace(/\.$/, '')
+      + "' of a record component has a layout this engine cannot superpose yet");
+  };
+  return leaf(components, '');
+}
+
 function _superposeCellsPerAtom(lifted: any[], sc: number): number {
   if (!(sc > 0) || lifted.length === 0) return 1;
   const m = lifted[0].samples.length / sc;
@@ -2545,7 +2606,17 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   return Promise.all([
     Promise.all(d.fromNames.map(ctx.getMeasure)),
     _superposeCapturedParents(d.fromNames, ctx),
-  ]).then(([parents, captured]: [any[], any[][]]) => {
+  ]).then(([parentMeasures, captured]: [any[], any[][]]) => {
+    // Record- and tuple-valued components (`superpose(prior, prior)` over a
+    // `lawof(record(…))`) have no flat `samples`. Select over per-component
+    // atom INDICES with the same weights, then gather every field leaf by the
+    // chosen (component, atom) pairs, so a record atom moves as a whole.
+    const records = parentMeasures.length > 0 && parentMeasures.every(_isStructuredMeasure);
+    if (!records && parentMeasures.some(_isStructuredMeasure)) {
+      throw new Error("superpose '" + name + "': the components must share one variate space "
+        + '(spec §06), but some are record or tuple measures and some are not');
+    }
+    const parents = records ? parentMeasures.map((m: any, pi: number) => _superposeIndexProxy(m, pi, ctx.sampleCount)) : parentMeasures;
     let totalN = 0;
     for (const p of parents) totalN += p.samples.length;
     if (totalN === 0) {
@@ -2743,6 +2814,13 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       // Equal atom weights → n_eff = N exactly, not the estimator's N(1 + ε).
       ? sc
       : empirical.effectiveSampleSize({ samples: out, logWeights: outW });
+    if (records) {
+      const m: any = _gatherStructured(parentMeasures, out, ctx.sampleCount, name);
+      m.logWeights = outW;
+      m.logTotalmass = totalLogMass;
+      m.n_eff = nEff;
+      return m;
+    }
     if (cells > 1) {
       // Keep the variate's per-atom shape: the components share it (§06 makes
       // every component of a superposition live on one variate space), so it
