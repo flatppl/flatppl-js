@@ -4126,7 +4126,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // measure, so type it as the call. Its refusal names the reading and the
     // kernel spelling, since the per-element program is a kernel broadcast.
     const builtinMeasureOp = head && typeof head.name === 'string'
-      && builtins.MEASURE_OPS.has(head.name)
+      && builtins.MEASURE_OPS.has(head.name) && builtins.MEASURE_PRODUCING.has(head.name)
       && (head.kind === 'const' || (head.kind === 'ref' && head.ns === 'self'
         && !loweredModule.bindings.has(head.name)));
     const isCollection = (t: any) => t && (t.kind === 'array' || t.kind === 'table' || t.kind === 'tvector');

@@ -1125,7 +1125,9 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg || astArg.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
         || astArg.callee.name !== 'broadcast' || !astArg.args || astArg.args.length < 2) return astArg;
     const head = astArg.args[0];
-    if (head?.type !== 'Identifier' || !MEASURE_OPS.has(head.name) || out.has(head.name)) return astArg;
+    // A measure-producing op only: logdensityof / totalmass return values.
+    if (head?.type !== 'Identifier' || !MEASURE_OPS.has(head.name) || !MEASURE_PRODUCING.has(head.name)
+        || out.has(head.name)) return astArg;
     const operands = astArg.args.slice(1);
     for (const a of operands) {
       if (!a || a.type === 'KeywordArg') return astArg;
