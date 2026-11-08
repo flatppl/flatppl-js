@@ -1748,12 +1748,18 @@ function classifyStochasticIndex(rhsIR: IRNode, ast: any, bindings: any): Deriva
   }
   const cat = resolveCategoricalP(indexIR, bindings, new Set());
   if (!cat) return null;
+  // `get` is 1-based, so a 0-based selector would pair branch k with
+  // P(i = k - 1) and silently score a shifted mixture.
+  if (cat.base === 0) {
+    throw new Error('a Categorical0 selector is 0-based; index the tuple with get0');
+  }
   const K = branches.length;
   const selectorRef = (indexIR.kind === 'ref' && indexIR.ns === 'self')
     ? indexIR.name : null;
   // Per-branch log-weights from the Categorical pmf. A literal weight
   // vector folds to per-element log lits; otherwise index the weight
-  // IR per branch (base-aware: Categorical 1-based, Categorical0 0).
+  // IR per branch. The weight vector is a plain FlatPPL vector, so `get`
+  // on it is 1-based.
   const pIR = cat.pIR;
   const litVec = (pIR.kind === 'call' && pIR.op === 'vector'
     && Array.isArray(pIR.args) && pIR.args.length === K) ? pIR.args : null;
@@ -1762,7 +1768,7 @@ function classifyStochasticIndex(rhsIR: IRNode, ast: any, bindings: any): Deriva
     const elem = litVec
       ? litVec[k]
       : { kind: 'call', op: 'get',
-          args: [pIR, { kind: 'lit', value: cat.base + k }] };
+          args: [pIR, { kind: 'lit', value: 1 + k }] };
     logweightIRs.push({ kind: 'call', op: 'log', args: [elem] });
   }
   return {

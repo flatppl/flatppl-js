@@ -1927,6 +1927,34 @@ function _installParamChecks(registry: Record<string, any>) {
 }
 _installParamChecks(REGISTRY);
 
+// §03 "Note on infinities": `reals` admits `inf` and `-inf` as legal values,
+// but "the reference measure is the ordinary Lebesgue measure on the
+// finite-real part; the points ±∞ carry zero Lebesgue mass". So `±inf` lies
+// outside the support of every univariate density, the density tends to 0
+// there, and the log-density is `-inf`. A formula such as
+// `(k - 1) log(x) - (x / lambda)^k` gives the IEEE artifact `inf - inf = NaN`
+// instead. NaN stays NaN. A Dirac atom may itself be infinite, so it keeps its
+// own rule.
+function _infiniteScoresZero(x: any): boolean {
+  return x === Infinity || x === -Infinity;
+}
+function _installInfiniteVariateRule(registry: any) {
+  for (const [name, entry] of Object.entries(registry) as Array<[string, any]>) {
+    const logpdf = entry.logpdfFn;
+    if (name === 'Dirac' || typeof logpdf !== 'function') continue;
+    const guarded: any = (x: any, ...params: any[]) =>
+      _infiniteScoresZero(x) ? -Infinity : logpdf(x, ...params);
+    if (typeof logpdf.factory === 'function') {
+      guarded.factory = (...params: any[]) => {
+        const prepared = logpdf.factory(...params);
+        return (x: any) => (_infiniteScoresZero(x) ? -Infinity : prepared(x));
+      };
+    }
+    entry.logpdfFn = guarded;
+  }
+}
+_installInfiniteVariateRule(REGISTRY);
+
 // =====================================================================
 // Dispatch helpers
 // =====================================================================
