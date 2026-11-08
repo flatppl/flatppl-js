@@ -43,3 +43,36 @@ test('tableDiagnostics: non-finite perParam values fall back', () => {
   assert.equal(d.ess, 500);
   assert.ok(Number.isNaN(d.rhat));
 });
+
+test('tableDiagnostics: a vector latent row reads its own coordinate, not the next one', async () => {
+  // The samplers key perParam by the model view's coordinate names; the table
+  // labels come from listScalarAxes. Both are built by the real code here.
+  const { createRequire } = await import('node:module');
+  const require_ = createRequire(import.meta.url);
+  const { ctxFor } = require_('@flatppl/engine/test/_ctx-factory.ts');
+  const MV = require_('@flatppl/engine/model-view.ts');
+  const { listScalarAxes } = await import('./util.ts');
+  const { ctx } = ctxFor(`
+theta ~ iid(Normal(0.0, 1.0), 3)
+y ~ Normal(sum(theta), 1.0)
+prior = lawof(record(theta = theta))
+K = kernelof(record(y = y), theta = theta)
+L = likelihoodof(K, record(y = 0.5))
+posterior = bayesupdate(L, prior)
+`, 50);
+  const mv = await MV.buildModelViewFromCtx(ctx, ctx.derivations['posterior']);
+  assert.equal(mv.names.length, 3);
+  // Coordinate j (0-based slot in the flat draw) carries ESS 100·(j+1).
+  const perParam = {};
+  mv.names.forEach((nm, j) => { perParam[nm] = { rHat: 1 + j / 100, essBulk: 100 * (j + 1) }; });
+  const N = 4;
+  const samples = new Float64Array(N * 3);
+  const measure = { diagnostics: { perParam }, fields: { theta: { shape: 'array', dims: [3], samples } } };
+  const axes = listScalarAxes(measure);
+  assert.deepEqual(axes.map((a) => a.label), ['theta[1]', 'theta[2]', 'theta[3]']);
+  axes.forEach((a, j) => {
+    const d = tableDiagnostics(measure, a.label, 7);
+    assert.equal(d.ess, 100 * (j + 1), `${a.label} is slot ${j}`);
+    assert.equal(d.rhat, 1 + j / 100);
+  });
+});
