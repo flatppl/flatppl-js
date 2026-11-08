@@ -413,10 +413,12 @@ function parse(tokensIn: any[], variant: any) {
     let opTok = advance();
     let right = parseAddition();
     let chain = AST.BinaryExpr(opTok.value, left, right, mergeLoc(left, right));
-    // A dotted comparison broadcasts elementwise; the `land` chain
-    // combiner (below) stays scalar. Each comparison desugars
-    // independently, so mixed chains like `a < b .< c` are permitted.
-    if (opTok.dotted) chain.broadcast = true;
+    // A dotted comparison broadcasts elementwise. §05: dotted operators are
+    // broadcast sugar and a chain lowers to `land`, so an all-dotted chain
+    // `a .< b .<= c` is `land.(a .< b, b .<= c)`. A chain that mixes dotted
+    // and plain comparisons has no such reading and is refused.
+    const dotted = !!opTok.dotted;
+    if (dotted) chain.broadcast = true;
     let lastRight = right;
 
     // Without chained comparison, a second operator at this level is
@@ -436,9 +438,19 @@ function parse(tokensIn: any[], variant: any) {
       right = parseAddition();
       const cmp = AST.BinaryExpr(opTok.value, lastRight, right,
                                  mergeLoc(lastRight, right));
+      if (!!opTok.dotted !== dotted) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'a comparison chain mixes dotted and plain comparisons; write every comparison '
+            + 'dotted (`a .< b .<= c`) or none (`a < b <= c`) (spec §05)',
+          loc: opTok.loc,
+        });
+      }
       if (opTok.dotted) cmp.broadcast = true;
       const callee = AST.Identifier('land', opTok.loc);
-      chain = builtinCall(callee, [chain, cmp], mergeLoc(chain, cmp));
+      chain = dotted
+        ? broadcastCall(callee, [chain, cmp], mergeLoc(chain, cmp), true)
+        : builtinCall(callee, [chain, cmp], mergeLoc(chain, cmp));
       lastRight = right;
     }
     return chain;
