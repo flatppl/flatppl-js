@@ -3484,7 +3484,10 @@ function _singleRelabelName(name: string, bindings: any): string | null {
 //     under that record field. Lift supplies a binding for an inline leaf.
 //     classifyRecordOrJoint unwraps these fields when named components are
 //     combined, preserving the same shape as the keyword spelling.
-// A multi-name relabel needs the explicit product structure above.
+// A multi-name relabel of any other base, such as §04's
+// `relabel(iid(M, n), names)`, gets no derivation here. Its density still
+// scores: logdensityof lowers the binding structurally (_expandStructural's
+// relabel arm) and the walker consumes the record field by field.
 function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationRecord | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseIR = rhsIR.args[0];
@@ -4133,8 +4136,13 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       input = (d as any).bodyIR || (d as any).bodyName;
       opts = { derivation: d };
     } else if (d.kind === 'logdensityof') {
-      if (!resolvable((d as any).measureName)) return false;   // named-target gate
-      input = (d as any).measureName;                 // mirrors matLogdensityof
+      // Named-target gate. A measure binding without a derivation of its own,
+      // such as an iid over a relabel or a §04 multi-name relabel, still
+      // scores: matLogdensityof lowers it structurally and walks it, so the
+      // lowering below decides.
+      const mName = (d as any).measureName;
+      if (!resolvable(mName) && !isMeasureBinding(bindings.get(mName))) return false;
+      input = mName;                                  // mirrors matLogdensityof
     } else if (d.kind === 'jointchain') {
       if (name == null) return null;                  // caller didn't pass a name
       input = name;
@@ -5784,6 +5792,13 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     const inner: any = _expandStructural(ir.args[1], ctx, visited);
     if (!inner) return null;
     return { ...ir, args: [ir.args[0], inner] };
+  }
+  if (ir.op === 'relabel' && Array.isArray(ir.args) && ir.args.length === 2) {
+    // relabel(M, names) ≡ pushfwd(fn(relabel(_, names)), M) (§04): inline the
+    // base measure, as for truncate, so the walker reaches it. The names stay.
+    const inner: any = _expandStructural(ir.args[0], ctx, visited);
+    if (!inner) return null;
+    return { ...ir, args: [inner, ir.args[1]] };
   }
   if (ir.op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
     // truncate(M, S): args[0] is the BASE MEASURE, args[1] the set. Inline
