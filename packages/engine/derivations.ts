@@ -1795,6 +1795,19 @@ function classifyStochasticIndex(rhsIR: IRNode, ast: any, bindings: any): Deriva
 // conditions are documented deferrals; classifyIfelse returns null
 // for them, so value-valued ifelse stays on the evaluator path
 // untouched.
+// The value of an ifelse condition that reads only fixed-phase bindings, or
+// null. A condition on a draw or a parameter is per atom and stays the
+// selector's business; only a fixed one is evaluated here.
+function _fixedCondition(ir: any, bindings: any): boolean | null {
+  for (const name of collectSelfRefs(ir) as Set<string>) {
+    const b = bindings.get(name);
+    if (!b || b.phase !== 'fixed') return null;
+  }
+  let v: any;
+  try { v = resolveIRToValue(ir, bindings, new Map(), true); } catch (_) { return null; }
+  return typeof v === 'boolean' ? v : null;
+}
+
 function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelect | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 3) return null;
   if (!ast || !Array.isArray(ast.args) || ast.args.length !== 3) return null;
@@ -1807,8 +1820,10 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelec
   const resolveBranch = (astArg: any, irArg: any) => {
     const nm = resolveMeasureBaseName(astArg, bindings);
     if (nm != null) return { ref: nm };
+    // An inline measure: a distribution leaf or a composite measure call,
+    // which walkSelect walks through walkAcc like any other branch.
     if (irArg && irArg.kind === 'call'
-        && SAMPLEABLE_DISTRIBUTIONS.has(irArg.op)) return { ir: irArg };
+        && (SAMPLEABLE_DISTRIBUTIONS.has(irArg.op) || MEASURE_OPS.has(irArg.op))) return { ir: irArg };
     return null;
   };
   const aB = resolveBranch(ast.args[1], rhsIR.args[1]);
@@ -1816,6 +1831,23 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelec
   if (!aB || !bB) return null;
   const call = (op: any, args: any): IRNode => ({ kind: 'call', op, args });
   const lit1 = { kind: 'lit', value: 1 };
+  // §07: ifelse(cond, a, b) "returns a if cond is true, b otherwise". A
+  // condition that folds to a constant selects its branch outright: the other
+  // branch carries log-weight -inf, so neither density nor sampling sees it.
+  const fixedCond = _fixedCondition(rhsIR.args[0], bindings);
+  if (fixedCond != null) {
+    const pick = fixedCond ? 0 : 1;
+    return {
+      kind: 'select',
+      branches: [aB, bB],
+      logweightIRs: [0, 1].map((k) => ({ kind: 'lit', value: k === pick ? 0 : -Infinity })),
+      // The same constant weights drive sampling (matSelect's synthesized selector).
+      synthWeights: [0, 1].map((k) => (k === pick ? 1 : 0)),
+      selectorRef: null,
+      marginalize: true,
+      mode: 'mixture',
+    } as DerivationSelect;
+  }
   // Realised selector for SAMPLING (matSelect): the condition binding
   // — a {0,1} Bernoulli variate. Density only needs the per-branch
   // log-weights (selector marginalised); generation needs the
