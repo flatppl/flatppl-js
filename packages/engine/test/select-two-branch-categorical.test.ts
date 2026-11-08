@@ -4,9 +4,11 @@
 //
 // matSelect's gather picked the branch with `sel ? 0 : 1` whenever there were
 // two branches. That is the Bernoulli / ifelse rule. A Categorical selector
-// takes the values {1, 2} (Categorical0: {0, 1}), so `Categorical` sampled
-// branch 0 for every atom and `Categorical0` swapped the two branches, while
-// the density, which indexes by `selector - base`, stayed right.
+// takes the values {1, 2}, so `Categorical` sampled branch 0 for every atom,
+// while the density, which indexes by `selector - base`, stayed right.
+//
+// `xs[i]` is the 1-based `get`. A Categorical0 selector takes the values
+// {0, 1}, so `xs[i]` with it refuses rather than scoring `get0` semantics.
 //
 // ORACLE: branch k is chosen with probability p_k, so the fraction of atoms
 // near each branch's mean is p_k. The branches sit 10 apart with sigma 0.1, so
@@ -45,13 +47,12 @@ x = xs[i]
   assertFraction(got, 0.7, 'Categorical');
 });
 
-test('two-branch Categorical0 xs[i] samples each branch with its weight', async () => {
-  const got = await fractionOnBranchB(BRANCHES + `
+test('a Categorical0 selector refuses the 1-based xs[i]', async () => {
+  await assert.rejects(() => fractionOnBranchB(BRANCHES + `
 i = draw(Categorical0(p = [0.3, 0.7]))
 xs = [a, b]
 x = xs[i]
-`);
-  assertFraction(got, 0.7, 'Categorical0');
+`), /a Categorical0 selector is 0-based; index the tuple with get0/);
 });
 
 test('two-branch Categorical xs[i] with a computed weight vector', async () => {
@@ -96,4 +97,42 @@ x = xs[i]
   const count = [0, 0, 0];
   for (let k = 0; k < N; k++) count[Math.round(m.samples[k] / 10)]++;
   [0.2, 0.3, 0.5].forEach((p, k) => assertFraction(count[k] / N, p, `K=3 branch ${k}`));
+});
+
+test('a computed weight vector pairs branch k with its own weight in the density', async () => {
+  // Oracle: log sum_k w_k N(4; mu_k, 1) with w = (0.2, 0.3, 0.5) and
+  // mu = (0, 5, 10). The weights differ, so an off-by-one weight index
+  // shifts the mixture or reads past the vector.
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  const { ctx } = makeMatCtx(`
+w = softmax([log(0.2), log(0.3), log(0.5)])
+i ~ Categorical(w)
+a ~ Normal(0, 1)
+b ~ Normal(5, 1)
+c ~ Normal(10, 1)
+xs = [a, b, c]
+x = xs[i]
+lp = logdensityof(lawof(x), 4.0)
+`, { sampleCount: 1 });
+  const m = await ctx.getMeasure('lp');
+  const got = (m.value ? Array.from(m.value.data) : m.samples)[0] as number;
+  const phi = (x: number, mu: number) => Math.exp(-0.5 * (x - mu) ** 2) / Math.sqrt(2 * Math.PI);
+  const want = Math.log(0.2 * phi(4, 0) + 0.3 * phi(4, 5) + 0.5 * phi(4, 10));
+  assert.ok(Math.abs(got - want) < 1e-12, `got ${got}, want ${want}`);
+});
+
+test('a Categorical0 selector refuses the 1-based xs[i] in the density', async () => {
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  await assert.rejects(async () => {
+    const { ctx } = makeMatCtx(`
+w = softmax([log(0.2), log(0.8)])
+i ~ Categorical0(w)
+a ~ Normal(0, 1)
+b ~ Normal(5, 1)
+xs = [a, b]
+x = xs[i]
+lp = logdensityof(lawof(x), 1.0)
+`, { sampleCount: 1 });
+    await ctx.getMeasure('lp');
+  }, /a Categorical0 selector is 0-based; index the tuple with get0/);
 });
