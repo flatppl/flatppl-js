@@ -33,7 +33,7 @@ import { downloadReleaseAsset } from './github-download.mjs';
 export const THEME_REPOSITORY = 'https://github.com/flatppl/flatppl-theme';
 
 /** The adopted theme release. Bumping this is the whole adoption. */
-export const THEME_PIN = 'v0.1.10';
+export const THEME_PIN = 'v0.1.11';
 
 /** The bundle's file list (flatppl-theme's scripts/bundle.ts
  *  REQUIRED_FILES): what a sibling copy must find in the checkout, and
