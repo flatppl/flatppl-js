@@ -38,7 +38,8 @@ test('a record broadcast over addaxes(v, 0, 0) is one axis and collects a table'
   assert.deepEqual(errors(src), []);
   const { ctx } = makeMatCtx(src, { sampleCount: 1 });
   const t = await ctx.getMeasure('t');
-  const cols = t.fields.columns.fields;
+  assert.equal(t.shape, 'table');
+  const cols = t.fields;
   assert.deepEqual(Array.from(cols.a.value.data), [1, 2]);
   assert.deepEqual(Array.from(cols.b.value.data), [2, 4]);
 });
