@@ -89,8 +89,9 @@ function argSignature(op: string, numArgs: number): string[] | null {
   // its branch slots to 'measure' would mis-hoist value-valued
   // ifelse subexpressions (`ifelse(c, x+1, x-1)`) into bogus anon
   // measures. Measure-valued ifelse is recognised at classify time
-  // (classifyIfelse) on NAMED measure-binding branches; inline-
-  // measure branches are a documented deferral.
+  // (classifyIfelse), named or inline branches alike; the visitor
+  // hoists an inline condition of a measure-valued ifelse so the
+  // classifier sees a selector binding.
   if (op === 'lawof')                             return ['value-or-measure'];
   if (op === 'iid') {
     // iid(<measure>, n, m, ...): first arg measure-typed, rest values.
@@ -727,6 +728,22 @@ function liftInlineSubexpressions(bindings: any) {
     const op = astNode.callee.name;
     const numArgs = astNode.args ? astNode.args.length : 0;
     const sig = argSignature(op, numArgs);
+
+    // A measure-valued ifelse with an inline condition (`ifelse(x > 0.0, A,
+    // B)`): hoist the condition to its own binding, the spelling
+    // `c = x > 0.0; ifelse(c, A, B)` whose selector the classifier reads. A
+    // value-valued ifelse and a condition holding a hole stay in place.
+    if (op === 'ifelse' && numArgs === 3) {
+      const cond = astNode.args[0];
+      if (cond && cond.type !== 'Identifier' && cond.type !== 'KeywordArg'
+          && !containsHoleOrPlaceholder(cond)
+          && astNode.args.slice(1).every((b: any) => b && b.type !== 'KeywordArg'
+            && __knownAstType(b)?.kind === 'measure')) {
+        const name = freshName();
+        out.set(name, makeSyntheticBinding(name, cond));
+        astNode.args[0] = makeIdent(name, cond.loc);
+      }
+    }
 
     // record/joint/jointchain fields: each kwarg value gets lifted
     // to a synthetic binding so the classifier can read them as bare
