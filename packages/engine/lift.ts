@@ -33,6 +33,8 @@ const {
   isCallableLikeBindingType,
 } = require('./ir-shared.ts');
 const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN, MEASURE_OPS, SET_CONSTRUCTORS } = require('./builtins.ts');
+// Types a broadcast operand can have and still be no collection (§04).
+const NON_COLLECTION_KINDS = new Set(['scalar', 'measure', 'kernel', 'function', 'likelihood']);
 
 // =====================================================================
 // Inline-subexpression lifting
@@ -1128,13 +1130,14 @@ function liftInlineSubexpressions(bindings: any) {
     // A measure-producing op only: logdensityof / totalmass return values.
     if (head?.type !== 'Identifier' || !MEASURE_OPS.has(head.name) || !MEASURE_PRODUCING.has(head.name)
         || out.has(head.name)) return astArg;
+    // Only an operand KNOWN to be no collection counts: an unknown, failed or
+    // deferred type (a callback placeholder, say) may be an array, and then
+    // the broadcast iterates it.
     const operands = astArg.args.slice(1);
     for (const a of operands) {
-      if (!a || a.type === 'KeywordArg') return astArg;
-      const t = __knownAstType(a);
-      if (t && (t.kind === 'array' || t.kind === 'table' || t.kind === 'tvector')) return astArg;
+      if (!a || a.type === 'KeywordArg' || containsHoleOrPlaceholder(a)) return astArg;
       const isSet = a.type === 'CallExpr' && a.callee?.type === 'Identifier' && SET_CONSTRUCTORS.has(a.callee.name);
-      if ((!t || t.kind === 'deferred' || t.kind === 'any') && !isSet) return astArg;
+      if (!isSet && !NON_COLLECTION_KINDS.has(__knownAstType(a)?.kind)) return astArg;
     }
     return { type: 'CallExpr', callee: makeIdent(head.name, head.loc), args: operands, builtin: true, loc: astArg.loc };
   }

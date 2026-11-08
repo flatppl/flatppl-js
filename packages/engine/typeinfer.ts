@@ -4131,7 +4131,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         && !loweredModule.bindings.has(head.name)));
     const isCollection = (t: any) => t && (t.kind === 'array' || t.kind === 'table' || t.kind === 'tvector');
     // A set operand (`interval(...)`) types through setValueType, not inferExpr.
-    const known = (t: any, i: number) => (t && t.kind !== 'deferred' && t.kind !== 'any')
+    // Only an operand KNOWN to be no collection counts; an unknown or deferred
+    // type may be an array, which broadcast iterates.
+    const known = (t: any, i: number) => (t && ['scalar', 'measure', 'kernel', 'function', 'likelihood'].includes(t.kind))
       || setValueType(dataArgs[i], scopes) != null;
     if (builtinMeasureOp && dataTypes.length > 0 && !dataTypes.some(isCollection)
         && dataTypes.every(known)) {

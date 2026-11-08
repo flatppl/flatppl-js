@@ -64,3 +64,28 @@ test('a value-valued lambda broadcast stays inline', async () => {
   const m = await ctx.getMeasure('c');
   assert.deepEqual(Array.from(m.value.data), [2, 3]);
 });
+
+test('an operand of unknown type keeps the broadcast reading', () => {
+  // Inside a callback the operand is a placeholder of unknown type; it may be an
+  // array, so the no-collection single-call reading must not apply.
+  const { orchestrator } = require('../index.ts');
+  const lifted = orchestrator.buildDerivations(processSource('g = fn(weighted.(_, Normal(0.0, 1.0)))\n').bindings).bindings;
+  const ir = JSON.stringify(lifted.get('g').ir);
+  assert.ok(ir.includes('"op":"broadcast"') || ir.includes('broadcast'), ir.slice(0, 300));
+  assert.ok(!/"op":"weighted","args":\[\{"kind":"ref","ns":"%local"/.test(ir), 'rewritten to a single weighted call: ' + ir.slice(0, 300));
+});
+
+test('logdensityof over a callback operand keeps iterating it', async () => {
+  // §04: `logdensityof.(p, x)` iterates x; the zero-sum model scores per cell.
+  const { ctx } = makeMatCtx(`
+s = elementof(posreals)
+N = Normal(0, s)
+M = logweighted((x, p) -> sum(logdensityof.(p, x)), Lebesgue(zerosum(3)), N)
+score = logdensityof(M, [-1, 0, 1])
+f = functionof(score, scale = s)
+a = f(2)
+`, { sampleCount: 1 });
+  const a = (await ctx.getMeasure('a')).samples[0];
+  const want = -3 * Math.log(2 * Math.sqrt(2 * Math.PI)) - 1 / 4;
+  assert.ok(Math.abs(a - want) < 1e-12, `${a} vs ${want}`);
+});
