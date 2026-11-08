@@ -1599,6 +1599,9 @@ function _atomBroadcastBinop(scalarFn: any, batched: any, indep: any, N: any, sw
         JSON.stringify(indep.shape));
     }
   }
+  // The loops below read `indep.data` as the dense per-atom cell; a
+  // diag-stored matrix holds only its m diagonal entries.
+  if (valueLib.isDiagStored(indep)) indep = valueLib.densify(indep);
   if (isTransposeView(batched) !== isTransposeView(indep)) {
     throw new Error(opName + 'N: opposite orientation between atom-batched ' +
       'and atom-indep operands');
