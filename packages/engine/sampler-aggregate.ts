@@ -204,7 +204,7 @@ function _evalAggregate(ir: any, env: any): any {
   if (perfConfig.getOptimization('aggregate')) {
     for (const p of AGGREGATE_PATTERNS) {
       const m = p.match(ir, env);
-      if (m) return p.execute(ir, env, m);
+      if (m) return _nestedToValueSP(p.execute(ir, env, m));
     }
   }
   return _evalAggregateBroadcastReduce(ir, env);
@@ -846,6 +846,26 @@ function _flatToNested(data: Float64Array, shape: number[]): any {
 // materialise as an {elems} tuple-of-row-measures rather than a matrix
 // (materialiser-shared.fixedValueToMeasure). `_toFlat` already accepts
 // both Values and nested arrays, so downstream consumers are unaffected.
+// A specialiser that computes on plain JS operands returns nested arrays
+// (`_matmul`, the outer product); the broadcast-reduce default returns a
+// rank-2+ result as a shape-explicit Value. Give both the default's type, so
+// toggling the `aggregate` optimisation never changes the result type.
+function _nestedToValueSP(r: any): any {
+  if (!Array.isArray(r) || r.length === 0) return r;
+  const isRow = (x: any) => Array.isArray(x) || (x && x.BYTES_PER_ELEMENT !== undefined);
+  if (!isRow(r[0])) return r;
+  const shape: number[] = [];
+  for (let cur: any = r; isRow(cur); cur = cur[0]) shape.push(cur.length);
+  const data = new Float64Array(shape.reduce((x, y) => x * y, 1));
+  let k = 0;
+  const walk = (x: any, depth: number) => {
+    if (depth === shape.length - 1) { for (let i = 0; i < x.length; i++) data[k++] = +x[i]; return; }
+    for (let i = 0; i < x.length; i++) walk(x[i], depth + 1);
+  };
+  walk(r, 0);
+  return _flatToValueSP(data, shape);
+}
+
 function _flatToValueSP(data: Float64Array, shape: number[]): any {
   if (shape.length >= 2) return { shape: shape.slice(), data };
   return _flatToNested(data, shape);

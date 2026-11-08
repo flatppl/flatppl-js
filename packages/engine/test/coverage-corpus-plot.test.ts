@@ -111,6 +111,19 @@ function ctxFor(src: string) {
   return { ctx, lifted, built };
 }
 
+// b_mass_peak reaches §09 standard-module DISTRIBUTION members, which have
+// no surface-language measure lowering in this engine (only the FlatPDL
+// `builtin_logdensityof(CrystalBall, …)` the determiniser emits). Recorded
+// in TODO-flatppl-js.md; pinned WITH its message so it cannot acquire a new
+// error quietly. paired_assay's table-in-record refusal is recorded there
+// too. stdmod_interp_poly6 reaches the §09 `distances` module, which this
+// engine does not provide yet (TODO-flatppl-js.md).
+const KNOWN: Record<string, RegExp> = {
+  b_mass_peak: /weighted: arg 2 expects measure, got deferred/,
+  paired_assay: /a table may not appear inside a record/,
+  stdmod_interp_poly6: /standard module 'distances@0.1' is not provided by this engine/,
+};
+
 // A shape the viewer's renderers read: samples, a shaped value, record fields,
 // or tuple elements.
 function hasRenderableShape(m: any): boolean {
@@ -129,7 +142,12 @@ for (const dir of HAVE_CORPUS ? Object.keys(EXPECTED_MATERIALISES).sort() : []) 
 
   test(`coverage/${dir}: every expected binding materialises`, async () => {
     const src = fs.readFileSync(modelPath, 'utf8');
-    const { ctx, built } = ctxFor(src);
+    const { ctx, built, lifted } = ctxFor(src);
+    // A malformed model fails here with its located static message, not
+    // later with a materialisation error ("no derivation for …").
+    const errs = (lifted.diagnostics || []).filter((d: any) => d.severity === 'error'
+      && !(KNOWN[dir] && KNOWN[dir].test(d.message)));
+    assert.deepEqual(errs.map((d: any) => d.message), [], `${dir} has error diagnostics`);
     for (const name of EXPECTED_MATERIALISES[dir]) {
       assert.ok(built.bindings.has(name),
         `${dir}: no binding '${name}' — the corpus model changed, update this list`);
@@ -228,18 +246,6 @@ if (HAVE_CORPUS) {
   test('every coverage model analyses with no error diagnostics', () => {
     const dirs = fs.readdirSync(CORPUS)
       .filter((f: string) => fs.statSync(path.join(CORPUS, f)).isDirectory());
-    // b_mass_peak reaches §09 standard-module DISTRIBUTION members, which have
-    // no surface-language measure lowering in this engine (only the FlatPDL
-    // `builtin_logdensityof(CrystalBall, …)` the determiniser emits). Recorded
-    // in TODO-flatppl-js.md; pinned WITH its message so it cannot acquire a new
-    // error quietly. paired_assay's table-in-record refusal is recorded there
-    // too. stdmod_interp_poly6 reaches the §09 `distances` module, which this
-    // engine does not provide yet (TODO-flatppl-js.md).
-    const KNOWN: Record<string, RegExp> = {
-      b_mass_peak: /weighted: arg 2 expects measure, got deferred/,
-      paired_assay: /a table may not appear inside a record/,
-      stdmod_interp_poly6: /standard module 'distances@0.1' is not provided by this engine/,
-    };
     for (const dir of dirs.sort()) {
       const modelPath = path.join(CORPUS, dir, 'model.flatppl');
       if (!fs.existsSync(modelPath)) continue;

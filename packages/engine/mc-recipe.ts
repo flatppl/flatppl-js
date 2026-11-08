@@ -284,14 +284,21 @@ function _buildFromGenerative(genBcastIR: any, gen: any, detMaps: Array<{ paramN
   const retainedInterval = _uniformInterval(internalDraws[0].distIR, bindings);
   if (!retainedInterval) return null;            // v1: Uniform innovation
 
-  // Map broadcast positional args to kernel params; find the iid-collection
-  // latent (the marginalised draw) — exactly one in v1.
-  const args: any[] = (genBcastIR.args || []).slice(1);
+  // Map the broadcast args to kernel params — positional in order, keyword
+  // by the kernel's surface names (`broadcast(transport, x = xs, …)` is the
+  // same broadcast, §04) — and find the iid-collection latent (the
+  // marginalised draw), exactly one in v1.
+  const posArgs: any[] = (genBcastIR.args || []).slice(1);
+  const kwArgs: any = genBcastIR.kwargs || {};
+  const surface: string[] = gen.paramKwargs || params;
+  const argFor = (i: number) => (i < posArgs.length ? posArgs[i] : kwArgs[surface[i]]);
   let marginalRef: string | null = null;
   let marginalDistIR: any = null;
   let nIR: any = null;
-  for (let i = 0; i < params.length && i < args.length; i++) {
-    const m = _resolveMeasure(args[i], bindings, expand);
+  for (let i = 0; i < params.length; i++) {
+    const arg = argFor(i);
+    if (!arg) continue;
+    const m = _resolveMeasure(arg, bindings, expand);
     if (m && m.kind === 'call' && m.op === 'iid') {
       if (marginalRef) return null;              // v1: a single marginalised latent
       marginalRef = params[i];

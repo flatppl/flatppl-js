@@ -881,7 +881,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'joint_likelihood':
       case 'likelihoodof': {
         const t = inferLikelihoodOps(expr, scopes);
-        _checkDensityShapes(expr);
+        _checkDensityShapes(expr, scopes);
         return write(t, expr);
       }
       // kernelof and fn are lowered to functionof by lower.js (per
@@ -5151,12 +5151,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   //                                 call site (when L is built that
   //                                 way), so bayesupdate adds nothing
   //                                 new to the static check.
-  function _checkDensityShapes(expr: any): void {
+  function _checkDensityShapes(expr: any, scopes: any): void {
     if (expr.op === 'bayesupdate') return;   // see comment above
     const args = expr.args || [];
     if (args.length < 2) return;
     const mIR = args[0];
-    const xT = inferExpr(args[1], []);
+    // Infer in the call's own scopes: inside a fn/kernel body the variate
+    // may read a `%local` parameter.
+    const xT = inferExpr(args[1], scopes);
     if (!xT || xT.kind === 'failed' || xT.kind === 'deferred' || xT.kind === 'any') {
       return;   // can't statically determine variate type
     }
