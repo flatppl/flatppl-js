@@ -284,12 +284,51 @@ function _singularityOf(measureIR: any, loweredModule: any, depth: number): Reas
   const pair = _firstSingularPair(comps, loweredModule);
   if (pair) return pair;
 
+
   // Inheritance: a component that is itself a singular joint.
   for (const c of comps) {
     const inner = _singularityOf(c.measure, loweredModule, depth + 1);
     if (inner) return { kind: 'via', label: c.label, inner };
   }
+
+  // A nested record law spreads its coordinates over several levels:
+  // `lawof(record(inner = record(a = y, b = t), c = y + 0.0))` has the
+  // coordinates (a, b, c), and c = a puts the law on a plane in R^3. Compare the
+  // scalar leaves across levels, not only the components of one level.
+  const leaves = _leafComponents(comps, loweredModule, 0);
+  if (leaves.length > comps.length) {
+    const leafPair = _firstSingularPair(leaves, loweredModule);
+    if (leafPair) return leafPair;
+  }
   return null;
+}
+
+// The components with every record-valued field expanded into its fields,
+// labelled by path (`inner.a`). A field is a record when it is a `record(...)`
+// expression or names a binding whose expression is one.
+function _leafComponents(comps: Component[], loweredModule: any, depth: number): Component[] {
+  const out: Component[] = [];
+  for (const c of comps) {
+    let rec = c.value;
+    const target = _refTarget(rec, loweredModule);
+    if (target && !_isDrawBinding(target.binding)) rec = target.binding.rhs;
+    if (depth < MAX_DEPTH && rec && rec.kind === 'call' && rec.op === 'record'
+        && Array.isArray(rec.fields) && rec.fields.length > 0) {
+      const dom = _variateType(c.type);
+      const fields = dom && dom.kind === 'record' && dom.fields ? dom.fields : {};
+      const inner: Component[] = rec.fields.map((f: any) => ({
+        label: c.label + '.' + f.name,
+        roots: _noiseRootsOf(f.value, loweredModule),
+        value: f.value,
+        type: fields[f.name] || null,
+        measure: f.value,
+      }));
+      out.push(..._leafComponents(inner, loweredModule, depth + 1));
+    } else {
+      out.push(c);
+    }
+  }
+  return out;
 }
 
 function _setsEqual(a: Set<string>, b: Set<string>): boolean {
