@@ -418,11 +418,9 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
       return { kind: 'real' };
     }
     if (d.kind === 'truncate') {
+      const vector = truncateChartOf(cur, derivations, ctx);
+      if (vector) return vector;
       const s = d.setDescr;
-      // No unconstraining transform covers a truncation to a vector set.
-      if (s && s.kind === 'vectorset') {
-        return { kind: 'unsupported', distOp: 'truncate(' + s.set + '(' + s.n + '))' };
-      }
       if (s) {
         const lo = (s.lo != null && Number.isFinite(+s.lo)) ? +s.lo : -Infinity;
         const hi = (s.hi != null && Number.isFinite(+s.hi)) ? +s.hi : Infinity;
@@ -455,7 +453,7 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     // `stdsimplex(n)`, where spec §08 "Dirichlet" leaves the density undefined
     // (it is stated only "for x ∈ {p ∈ ℝⁿ : Σpᵢ = 1, pᵢ ≥ 0}") and the engine's
     // unconstrained continuation grows without bound. Name each kind instead.
-    if (d.kind === 'dirichlet') return { kind: 'simplex' };
+    if (d.kind === 'dirichlet') return { kind: 'simplex', ...dirichletWidth(d.distIR, ctx) };
     if (MULTIVARIATE_DERIV_KINDS.has(d.kind)) {
       return { kind: 'unsupported', distOp: (d.distIR && d.distIR.op) || d.kind };
     }
@@ -463,6 +461,50 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     return { kind: 'real' };
   }
   return { kind: 'real' };
+}
+
+// A Dirichlet's simplex width is its concentration vector's length, so the
+// chart is known without a prior pool. Empty when alpha does not resolve.
+function dirichletWidth(distIR: any, ctx: any): { n?: number } {
+  const alpha = distIR && (distIR.kwargs?.alpha ?? distIR.args?.[0]);
+  if (!alpha) return {};
+  if (alpha.kind === 'call' && alpha.op === 'vector' && Array.isArray(alpha.args)) return { n: alpha.args.length };
+  try {
+    const v = orchestrator.resolveIRToValue(alpha, ctx && ctx.bindings, ctx && ctx.fixedValues, true);
+    const n = Array.isArray(v) ? v.length : v && v.BYTES_PER_ELEMENT !== undefined ? v.length
+      : v && Array.isArray(v.shape) && v.shape.length === 1 ? v.shape[0] : null;
+    return n != null && n >= 2 ? { n } : {};
+  } catch (_) { return {}; }
+}
+
+// The chart of a truncation to a vector set (§03 ordered, stdsimplex,
+// zerosum, cartpow, cartprod), or null for a scalar one. Nested truncations
+// restrict to the INTERSECTION of their sets, and any chart whose image
+// contains that intersection is exact, because the truncated density is -inf
+// off it (the superset-chart rule of the 'sample' arm). Two cases:
+//   - a lower-dimensional set (stdsimplex, zerosum) anywhere in the chain fixes
+//     the chart: a full-dimensional chart reaches it only on a null set;
+//   - otherwise the outermost truncation's chart, the last restriction applied.
+function truncateChartOf(name: string, derivations: any, ctx: any): any {
+  const refSupport = require('./reference-support.ts');
+  const { resolveConstant } = require('./ir-shared.ts');
+  const number = (ir: any) => {
+    const v = resolveConstant(ir, ctx && ctx.bindings, new Set(), ctx && ctx.fixedValues);
+    return typeof v === 'number' ? v : null;
+  };
+  const reference = (ir: any) => (ir?.kind === 'ref' && ir.ns === 'self' ? ctx?.bindings?.get(ir.name)?.ir : null);
+  const supports: any[] = [];
+  for (let t = derivations[name]; t && t.kind === 'truncate'; t = derivations[t.from]) {
+    const s = t.supportIR ? refSupport.resolveSupport(t.supportIR, number, reference) : null;
+    if (s) supports.push(s);
+  }
+  const isVector = (s: any) => ['vectorset', 'power', 'product'].includes(s.kind);
+  if (!supports.some(isVector)) return null;
+  const lowerDim = supports.filter((s: any) => s.kind === 'vectorset' && s.set !== 'ordered');
+  if (lowerDim.length > 1 && !lowerDim.every((s: any) => s.set === lowerDim[0].set && s.n === lowerDim[0].n)) {
+    return { kind: 'unsupported', distOp: 'truncate to two different lower-dimensional sets' };
+  }
+  return refSupport.transformSupport(lowerDim[0] || supports[0]);
 }
 
 // Derivation kinds for multivariate draws whose support is a constrained

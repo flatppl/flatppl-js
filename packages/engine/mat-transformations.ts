@@ -410,6 +410,45 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
  * Per-atom rejection budget reads from ctx.rejectionBudget (defaults
  * to 1000). Configurable per host.
  */
+// §06 truncate(M, S): ν(A) = M(A ∩ S), not normalized. For a vector variate
+// (a joint or array parent, or a vector set such as ordered(n), cartpow(S, n)),
+// keep the parent's atoms and give an atom outside S zero mass; the slice
+// masses carry M(S) into logTotalmass. Null when the truncation is scalar.
+function truncateToVectorSupport(d: DerivationTruncate, parent: any, ctx: any, normalized: boolean): any {
+  const refSupport = require('./reference-support.ts');
+  const { resolveConstant } = require('./ir-shared.ts');
+  const number = (ir: any) => {
+    const v = resolveConstant(ir, ctx.bindings, new Set(), ctx.fixedValues);
+    return typeof v === 'number' ? v : null;
+  };
+  const reference = (ir: any) => (ir?.kind === 'ref' && ir.ns === 'self' ? ctx.bindings.get(ir.name)?.ir : null);
+  const support = d.supportIR ? refSupport.resolveSupport(d.supportIR, number, reference) : null;
+  const vectorSupport = !!support && ['vectorset', 'power', 'product'].includes(support.kind);
+  const vectorParent = (Array.isArray(parent.elems) && parent.elems.length > 0)
+    || (parent.value && Array.isArray(parent.value.shape) && parent.value.shape.length >= 2);
+  if (!vectorSupport && !vectorParent) return null;
+  if (!support) {
+    return Promise.reject(require('./limitations.ts').engineLimitation(
+      'a truncation of a vector-valued measure to this set', 'materialise'));
+  }
+  const matrix = shared.measureToParamValue(parent, d.from, 'truncate');
+  const D = matrix.shape.length >= 2 ? matrix.shape[matrix.shape.length - 1] : 1;
+  const N = matrix.shape[0];
+  const width = vectorSupport ? refSupport.width(support) : 1;
+  if (D !== width) {
+    return Promise.reject(new Error('truncate(M, S): the set has ' + width + ' coordinate'
+      + (width === 1 ? '' : 's') + ' but the variates of \'' + d.from + '\' have ' + D
+      + ' (spec §06: ν(A) = M(A ∩ S))'));
+  }
+  const logMasses = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    const row = Array.from(matrix.data.subarray(i * D, (i + 1) * D));
+    logMasses[i] = refSupport.contains(support, vectorSupport ? row : row[0]) ? 0 : -Infinity;
+  }
+  const out = shared.withSliceMasses(parent, logMasses);
+  return Promise.resolve(normalized ? Object.assign({}, out, { logTotalmass: 0 }) : out);
+}
+
 function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
   if ((d.setIR as any)?.op === 'cartprod') {
     // Density reads a record set through the Lebesgue support check; drawing
@@ -418,6 +457,8 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
       'a truncation to a record set', 'materialise'));
   }
   return ctx.getMeasure(d.from).then((parent: any) => {
+    const vector = truncateToVectorSupport(d, parent, ctx, normalized);
+    if (vector) return vector;
     const N = ctx.sampleCount;
     const parentLTM = shared.massOf(parent);
     const bounds = setBoundsForMat(d.setDescr);

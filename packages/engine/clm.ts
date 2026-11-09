@@ -1435,9 +1435,16 @@ function feedInputs(
       // Whole-record param: each per-atom record object (field access resolves
       // per atom). e.g. transport `pars` = record(a,b,mu).
       val = shared.measureToPerAtomRecords(parent, name, 'feedInputs');
-    } else if (parent && parent.fields && src.field != null
-        && parent.fields[src.field] && parent.fields[src.field].samples) {
-      val = shared.measureToRefValue(parent.fields[src.field], src.field, 'feedInputs');
+    } else if (parent && parent.fields && src.field != null && parent.fields[src.field]
+        && (parent.fields[src.field].samples || parent.fields[src.field].value
+          || parent.fields[src.field].fields || Array.isArray(parent.fields[src.field].elems))) {
+      // A field is a scalar ensemble, a vector Value, a nested record, or a
+      // tuple of scalar components (a vector field built as `joint(D1, D2)`),
+      // which feeds as the [N, D] value its components form.
+      const f = parent.fields[src.field];
+      val = !f.samples && !f.value && !f.fields && Array.isArray(f.elems)
+        ? shared.measureToParamValue(f, src.field, 'feedInputs')
+        : shared.measureToRefValue(f, src.field, 'feedInputs');
     } else if (parent && parent.samples) {
       val = shared.measureToRefValue(parent, name, 'feedInputs');
     } else if (parent && !parent.fields && referencedBoundaryInputs().length === 1) {

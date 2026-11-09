@@ -2843,9 +2843,9 @@ function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: 
     // stays inline, where the normalize box machinery reads it.
     const recordSet = setIR?.kind === 'call' && setIR.op === 'cartprod' && setIR.fields?.length > 0;
     if (!isCallOp(setIR, 'interval', 2) && !recordSet) return null;
-    return { kind: 'truncate', from: baseName, setDescr: null, setIR };
+    return { kind: 'truncate', from: baseName, setDescr: null, setIR, supportIR: setIR };
   }
-  return { kind: 'truncate', from: baseName, setDescr };
+  return { kind: 'truncate', from: baseName, setDescr, supportIR: rhsIR.args[1] };
 }
 
 // pushfwd(f, M) — first-class measure-op classifier. Per spec §06:

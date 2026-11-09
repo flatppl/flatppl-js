@@ -115,7 +115,13 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     try {
       // Draws use the shared context cache. A constructor joint's free inputs
       // instead read its materialized fields, including independent factors.
-      const m: any = drawPrior ? await ctx.getMeasure(l.name) : priorMeasure?.fields?.[l.name];
+      let m: any = drawPrior ? await ctx.getMeasure(l.name) : priorMeasure?.fields?.[l.name];
+      // A vector field materialised as a tuple of scalar components (a joint
+      // of distributions, `joint(Normal(3, 1), Normal(10, 1))`) has no flat
+      // samples; read it as the [N, D] value its components form.
+      if (m && !m.samples && !m.value && Array.isArray(m.elems) && m.elems.length > 0) {
+        m = Object.assign({}, m, { value: require('./materialiser-shared.ts').measureToParamValue(m, l.name, 'model-view') });
+      }
       const s = m && (m.samples || (m.value && m.value.data));
       if (s && s.length > 0) {
         // Per-atom size = product of all but the leading (atom) axis.
