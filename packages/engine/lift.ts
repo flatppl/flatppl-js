@@ -32,7 +32,9 @@ const {
   collectSelfRefs,
   isCallableLikeBindingType,
 } = require('./ir-shared.ts');
-const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN } = require('./builtins.ts');
+const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN, MEASURE_OPS, SET_CONSTRUCTORS } = require('./builtins.ts');
+// Types a broadcast operand can have and still be no collection (§04).
+const NON_COLLECTION_KINDS = new Set(['scalar', 'measure', 'kernel', 'function', 'likelihood']);
 
 // =====================================================================
 // Inline-subexpression lifting
@@ -1111,7 +1113,50 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineFilterLift(astArg);
       astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
+      astArg = inlineBroadcastKernelLift(astArg);
+      astArg = inlineNoCollectionBroadcast(astArg);
     }
+    return astArg;
+  }
+
+  // §04 "Non-collection inputs": "If there are no collection arguments,
+  // `broadcast` behaves like a single function or kernel call." A dotted
+  // measure op over measures, sets and scalars (`normalize.(Normal.(mu, 1.0))`)
+  // evaluates as that call. typeinfer has already checked it as the call.
+  function inlineNoCollectionBroadcast(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
+        || astArg.callee.name !== 'broadcast' || !astArg.args || astArg.args.length < 2) return astArg;
+    const head = astArg.args[0];
+    // A measure-producing op only: logdensityof / totalmass return values.
+    if (head?.type !== 'Identifier' || !MEASURE_OPS.has(head.name) || !MEASURE_PRODUCING.has(head.name)
+        || out.has(head.name)) return astArg;
+    // Only an operand KNOWN to be no collection counts: an unknown, failed or
+    // deferred type (a callback placeholder, say) may be an array, and then
+    // the broadcast iterates it.
+    const operands = astArg.args.slice(1);
+    for (const a of operands) {
+      if (!a || a.type === 'KeywordArg' || containsHoleOrPlaceholder(a)) return astArg;
+      const isSet = a.type === 'CallExpr' && a.callee?.type === 'Identifier' && SET_CONSTRUCTORS.has(a.callee.name);
+      if (!isSet && !NON_COLLECTION_KINDS.has(__knownAstType(a)?.kind)) return astArg;
+    }
+    return { type: 'CallExpr', callee: makeIdent(head.name, head.loc), args: operands, builtin: true, loc: astArg.loc };
+  }
+
+  // §04 broadcasting over an inline kernel, `broadcast(fn(normalize(truncate(
+  // Normal(_, 1.0), S))), mu)`: hoist the kernel to its own binding so the call
+  // is `K.(mu)`, the spelling the kernel-broadcast classifier reads. A
+  // value-valued lambda stays inline for the evaluator.
+  function inlineBroadcastKernelLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
+        || astArg.callee.name !== 'broadcast' || !astArg.args || astArg.args.length < 2) return astArg;
+    const fArg = astArg.args[0];
+    if (!fArg || fArg.type !== 'CallExpr' || fArg.callee?.type !== 'Identifier'
+        || !['fn', 'functionof', 'kernelof'].includes(fArg.callee.name)) return astArg;
+    if (__knownAstType(fArg)?.kind !== 'kernel') return astArg;
+    visit(fArg);
+    const n = freshName();
+    out.set(n, makeSyntheticBinding(n, fArg));
+    astArg.args[0] = makeIdent(n, fArg.loc);
     return astArg;
   }
 
