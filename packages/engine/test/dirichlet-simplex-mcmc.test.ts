@@ -180,21 +180,36 @@ test('unconstrainAll reads a simplex latent given as a plain array or a shaped V
   }
 });
 
-test('a simplex latent whose prior measure will not materialise is refused, not flattened', async () => {
-  // model-view reconciles a Dirichlet latent's width from its materialised
-  // prior pool; `enumerateLatents` reports it as scalar until then. With the
-  // pool unavailable the width is unknown, and silently treating it as one
-  // scalar coordinate would drop the simplex constraint again.
-  const { ctx } = ctxFor(MODEL, 200);
+function blindTo(ctx: any, name: string) {
   const inner = ctx.getMeasure;
-  const blind = Object.assign({}, ctx, {
+  return Object.assign({}, ctx, {
     getMeasure: (n: string) => {
-      if (n === 'p') throw new Error('prior pool unavailable (test)');
+      if (n === name) throw new Error('prior pool unavailable (test)');
       return inner(n);
     },
   });
+}
+
+test('a simplex latent takes its width from a static concentration, not the prior pool', async () => {
+  // alpha = [2, 3, 4] fixes K = 3, so the view needs no materialised pool.
+  const { ctx } = ctxFor(MODEL, 200);
+  const mv = await MV.buildModelViewFromCtx(blindTo(ctx, 'p'), ctx.derivations['posterior']);
+  assert.equal(mv.dim, 2);
+  assert.deepEqual(mv.names, ['p[0]', 'p[1]', 'p[2]']);
+});
+
+test('a simplex latent whose width is not static and whose prior will not materialise is refused, not flattened', async () => {
+  // A latent concentration has no static length, so the width comes from the
+  // prior pool. With the pool unavailable it is unknown, and treating the
+  // latent as one scalar coordinate would drop the simplex constraint.
+  const SRC = MODEL.replace('p ~ Dirichlet(alpha = [2.0, 3.0, 4.0])',
+    'a ~ iid(Exponential(1.0), 3)\np ~ Dirichlet(alpha = a)').replace('record(p = p)', 'record(a = a, p = p)')
+    .replace('kernelof(record(y = y), p = p)', 'kernelof(record(y = y), a = a, p = p)');
+  const { ctx } = ctxFor(SRC, 200);
+  assert.equal(modelSpec.enumerateLatents(ctx.derivations['posterior'], ctx)
+    .find((l: any) => l.name === 'p').support.n, undefined);
   await assert.rejects(
-    () => MV.buildModelViewFromCtx(blind, ctx.derivations['posterior']),
+    () => MV.buildModelViewFromCtx(blindTo(ctx, 'p'), ctx.derivations['posterior']),
     (e: any) => {
       assert.match(e.message, /simplex latent 'p' needs a vector shape/, `unexpected: ${e.message}`);
       return true;

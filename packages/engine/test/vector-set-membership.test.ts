@@ -138,7 +138,11 @@ test('Lebesgue on a vector set needs a fixed size to classify', async () => {
   await assert.rejects(() => ctx.getMeasure('__score__'), /no derivation/);
 });
 
-test('MCMC refuses a latent truncated to a vector set', async () => {
+test('MCMC samples a latent truncated to a vector set on its ordered chart', async () => {
+  // The posterior is N(0, I − 11ᵀ/4) restricted to x1 < x2 < x3. That law is
+  // exchangeable, so its restriction is the order statistics of Y ~ N(0, I − 11ᵀ/4).
+  // Y = W − S/6 · 1 with W ~ N(0, I) and S = ΣW gives the same covariance, and
+  // a common shift moves no rank. So E[x] = E[W₍ᵢ₎] = (−3/(2√π), 0, 3/(2√π)).
   const { materialiser } = require('..');
   const SRC = `
 x ~ truncate(iid(Normal(0.0, 1.0), 3), ordered(3))
@@ -147,10 +151,21 @@ K = functionof(joint(z = Normal(mu = sum(x), sigma = 1.0)), x = x)
 L = likelihoodof(K, record(z = 0.0))
 posterior = bayesupdate(L, prior)
 `;
-  const { ctx } = ctxFor(SRC, 50);
-  await assert.rejects(
-    () => materialiser.materialiseMeasure('posterior', ctx, { backend: 'mh', warmup: 5, draws: 5 }),
-    /truncate\(ordered\(3\)\)/);
+  // About 1/6 of the prior pool is ordered. MH starts and tunes from the live
+  // atoms, so a pool of 50 is too small (E[x3] 0.73).
+  const { ctx } = ctxFor(SRC, 2000);
+  const m = await materialiser.materialiseMeasure('posterior', ctx,
+    { backend: 'mh', chains: 4, warmup: 1000, draws: 4000, seed: 1 });
+  const f = m.fields.x;
+  const data: Float64Array = f.samples || f.value.data;
+  const N = data.length / 3;
+  const s = [0, 0, 0];
+  for (let a = 0; a < N; a++) {
+    assert.ok(data[3 * a] < data[3 * a + 1] && data[3 * a + 1] < data[3 * a + 2], `draw ${a} unordered`);
+    for (let j = 0; j < 3; j++) s[j] += data[3 * a + j];
+  }
+  const e = 3 / (2 * Math.sqrt(Math.PI));
+  [-e, 0, e].forEach((want, j) => assert.ok(Math.abs(s[j] / N - want) < 0.1, `E[x${j + 1}] ${s[j] / N} vs ${want}`));
 });
 
 test('Lebesgue(support = cartpow(reals, 3)) scores 0 at a finite point', async () => {

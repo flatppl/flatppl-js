@@ -520,6 +520,9 @@ export interface DerivationTruncate {
   setDescr: any;
   /** Interval IR when bounds depend on live parameters. */
   setIR?: IRNode;
+  /** The set expression as written, for a vector support (§03 ordered,
+   *  stdsimplex, zerosum, cartpow, cartprod) that `setDescr` cannot carry. */
+  supportIR?: IRNode;
 }
 
 /** Pushforward of `from` measure through function-binding `fnRef`. */
