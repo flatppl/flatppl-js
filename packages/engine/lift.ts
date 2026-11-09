@@ -1133,8 +1133,42 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineBroadcasted(astArg);
       astArg = inlineBroadcastKernelLift(astArg);
       astArg = inlineNoCollectionBroadcast(astArg);
+      astArg = inlineCollectionMeasureOpBroadcast(astArg);
     }
     return astArg;
+  }
+
+  // §04: a broadcast iterates its collection operands and holds the rest
+  // constant, so `weighted.(w, M)` with w an array is the kernel broadcast
+  // whose kernel at position i is weighted(w_i, M). Build that kernel — one
+  // input per collection operand, the constant operands inside unchanged — the
+  // way dotted locscale over array shift/scale already does, and broadcast it.
+  function inlineCollectionMeasureOpBroadcast(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
+        || astArg.callee.name !== 'broadcast' || !astArg.args || astArg.args.length < 2) return astArg;
+    const head = astArg.args[0];
+    if (head?.type !== 'Identifier' || !MEASURE_OPS.has(head.name) || !MEASURE_PRODUCING.has(head.name)
+        || head.name === 'locscale' || out.has(head.name)) return astArg;
+    const operands = astArg.args.slice(1);
+    const collections: any[] = [];
+    for (const a of operands) {
+      if (!a || a.type === 'KeywordArg' || containsHoleOrPlaceholder(a)) return astArg;
+      const t = __knownAstType(a);
+      const isSet = a.type === 'CallExpr' && a.callee?.type === 'Identifier' && SET_CONSTRUCTORS.has(a.callee.name);
+      if (t && (t.kind === 'array' || t.kind === 'table' || t.kind === 'tvector')) collections.push(a);
+      else if (!isSet && !NON_COLLECTION_KINDS.has(t?.kind)) return astArg;
+    }
+    if (collections.length === 0) return astArg;
+    const loc = astArg.loc;
+    const params = collections.map(() => ({ type: 'Placeholder', name: freshName(), loc }));
+    const body = { type: 'CallExpr', callee: makeIdent(head.name, head.loc), builtin: true, loc,
+      args: operands.map((a: any) => { const k = collections.indexOf(a); return k >= 0 ? params[k] : a; }) };
+    const kernel = { type: 'CallExpr', callee: makeIdent('functionof', loc), builtin: true, loc,
+      args: [body, ...params.map((pp: any) => ({ type: 'KeywordArg', name: pp.name, value: pp, loc }))] };
+    const name = freshName();
+    out.set(name, makeSyntheticBinding(name, kernel));
+    return { type: 'CallExpr', callee: makeIdent('broadcast', loc), builtin: true,
+      args: [makeIdent(name, loc), ...collections], loc };
   }
 
   // §04 "Non-collection inputs": "If there are no collection arguments,
