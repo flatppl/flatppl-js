@@ -428,8 +428,8 @@ for (const c of HALL3) {
   });
 }
 
-test('[WILL-FLIP] a Hall size-3 shape whose OUTER sibling is an INLINE expression is '
-  + 'still a MISS', async () => {
+test('a Hall size-3 shape whose OUTER sibling is an INLINE expression is a static error; '
+  + 'the materialiser alone still scores it', async () => {
   // Pinning a value known to be WRONG, deliberately: the law is R³-Lebesgue-null, so
   // §06's "otherwise refused by the engine" is still unmet for this ONE spelling and
   // any finite answer is wrong. When clm learns to refuse it, this test goes red and
@@ -444,12 +444,22 @@ test('[WILL-FLIP] a Hall size-3 shape whose OUTER sibling is an INLINE expressio
   // container reports its children correctly, and the sibling reports nothing, so no
   // pair can overlap. Naming the sibling (`w = y + 0.0; … c = w`) refuses.
   // Tracked in flatppl-dev/TODO-flatppl-js.md.
-  const { ctx } = ctxFor(`
+  //
+  // The STATIC pass now refuses this spelling: it compares scalar leaves across
+  // levels, and inner.a and c are both functions of y. That meets §06's "a static
+  // error where detectable"; every scorer refuses a static error. The value below
+  // is what the materialiser computes when called past the static gate, which is
+  // the separate "a statically invalid binding still evaluates" gap.
+  const SRC = `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
 R = lawof(record(inner = record(a = y, b = t), c = y + 0.0))
 ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
-`, 1);
+`;
+  const errs = singularErrorsOf(SRC);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /components 'inner\.a' and 'c' are both deterministic functions of the single draw 'y'/);
+  const { ctx } = ctxFor(SRC, 1);
   const m: any = await ctx.getMeasure('ld');
   assert.ok(Math.abs(m.samples[0] - -2.7868155996140187) < 1e-13,
     `expected the known-wrong -2.7868155996140187, got ${m.samples[0]}`);
@@ -1036,20 +1046,60 @@ ld = logdensityof(R, record(a = 0.5, b = 0.5))
 `), []);
 });
 
-test('a Hall deficiency needing a subset of size 3 is a MISS (documented limit)', () => {
+test('a nested law whose leaf repeats a sibling is a static error (Hall size 3)', () => {
   // Support is {(y, t, y)} ⊂ R³ — 2-dimensional, so genuinely singular. No PAIR
-  // of components has equal singleton root sets ({y,t} vs {y}), so the |S| = 2
-  // rule cannot see it. Pinned as a known miss rather than left undocumented; if
-  // the general Hall check ever lands, this test flips to expecting an error.
-  //
-  // STATIC silence only. clm now REFUSES this shape (its container rule unions a
-  // nested record's children's roots, so the pair test sees {y,t} against {y}) —
-  // see the "Hall size-3" backstop tests above. The static pass cannot copy that
-  // widening without false positives, so the two sides diverge here on purpose.
-  assert.deepEqual(singularErrorsOf(`
+  // of top-level components has equal singleton root sets ({y,t} vs {y}), but the
+  // leaves inner.a and c are both the draw y, and the static pass compares scalar
+  // leaves across levels. (A deficiency that no leaf pair shows, such as q = 2p,
+  // is still a documented miss above.)
+  const errs = singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
 R = lawof(record(inner = record(a = y, b = t), c = y))
 ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
-`), []);
+`);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /components 'inner\.a' and 'c' are both deterministic functions of the single draw 'y'/);
+});
+
+
+// ── nested record laws: leaves compared across levels ───────────────────────
+test('a nested record law whose inline sibling repeats a leaf is a static error', () => {
+  // §06 "Singular laws": c = y + 0.0 and inner.a = y put the law of (a, b, c) on
+  // a plane in R³, so it has no density w.r.t. Lebesgue(R³).
+  const errs = singularErrorsOf(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = t), c = y + 0.0))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
+`);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /components 'inner\.a' and 'c' are both deterministic functions of the single draw 'y'/);
+});
+
+test('a named inner record is compared leaf by leaf too', () => {
+  const errs = singularErrorsOf(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+r = record(a = y, b = t)
+R = lawof(record(inner = r, c = 2.0 * y))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.2))
+`);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /'inner\.a' and 'c'/);
+});
+
+test('a nested record law with independent leaves keeps its density', async () => {
+  const src = `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = t), c = n + 0.0))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
+`;
+  assert.deepEqual(singularErrorsOf(src), []);
+  const lnN = (x: number) => -0.5 * Math.log(2 * Math.PI) - 0.5 * x * x;
+  const { ctx } = ctxFor(src, 1);
+  const m: any = await ctx.getMeasure('ld');
+  assert.ok(Math.abs(m.samples[0] - (lnN(0.1) + lnN(0.2) + lnN(0.3))) < 1e-12, `got ${m.samples[0]}`);
 });
