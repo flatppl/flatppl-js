@@ -4128,6 +4128,43 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return dataTypes[0];
     }
 
+    // §04 "Non-collection inputs": "If there are no collection arguments,
+    // `broadcast` behaves like a single function or kernel call." A dotted
+    // measure op over measures, sets and scalars is that one call on the whole
+    // measure, so type it as the call. Its refusal names the reading and the
+    // kernel spelling, since the per-element program is a kernel broadcast.
+    const builtinMeasureOp = head && typeof head.name === 'string'
+      && builtins.MEASURE_OPS.has(head.name) && builtins.MEASURE_PRODUCING.has(head.name)
+      && (head.kind === 'const' || (head.kind === 'ref' && head.ns === 'self'
+        && !loweredModule.bindings.has(head.name)));
+    const isCollection = (t: any) => t && (t.kind === 'array' || t.kind === 'table' || t.kind === 'tvector');
+    // A set operand (`interval(...)`) types through setValueType, not inferExpr.
+    // Only an operand KNOWN to be no collection counts; an unknown or deferred
+    // type may be an array, which broadcast iterates.
+    const known = (t: any, i: number) => (t && ['scalar', 'measure', 'kernel', 'function', 'likelihood'].includes(t.kind))
+      || setValueType(dataArgs[i], scopes) != null;
+    if (builtinMeasureOp && dataTypes.length > 0 && !dataTypes.some(isCollection)
+        && dataTypes.every(known)) {
+      const before = diagnostics.length;
+      const single = { kind: 'call', op: head.name, args: dataArgs, loc: expr.loc };
+      const t = inferExpr(single, scopes);
+      for (let i = before; i < diagnostics.length; i++) {
+        const d = diagnostics[i];
+        if (d.severity !== 'error' || d.message.includes('has no collection operand')) continue;
+        d.message += ' `' + head.name + '.(…)` has no collection operand, so broadcast holds its '
+          + 'measures and sets constant and this is one call on the whole array-valued measure '
+          + '(spec §04 "Broadcasting"). To apply ' + head.name + ' to each element, broadcast a '
+          + 'kernel: `broadcast(fn(' + head.name + '(Normal(_, 1.0), …)), mu)`.';
+      }
+      // A node inferred twice (its operands above, or a density op's own
+      // re-inference) would report the same refusal again; keep the first.
+      const seen = new Set(diagnostics.slice(0, before).map((d: any) => d.message + '@' + JSON.stringify(d.loc)));
+      for (let i = diagnostics.length - 1; i >= before; i--) {
+        if (seen.has(diagnostics[i].message + '@' + JSON.stringify(diagnostics[i].loc))) diagnostics.splice(i, 1);
+      }
+      return t;
+    }
+
     // Phase 2: per-arg classification — collection (outer shape +
     // cell type) or held-constant.
     function classifyArg(t: any): any {
