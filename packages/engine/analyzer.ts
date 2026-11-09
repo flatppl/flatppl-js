@@ -45,12 +45,10 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
     }
     case 'CallExpr': {
       if (node.callee?.type === 'FieldAccess' && node.callee.object?.type === 'Identifier') {
-        const mod = bindings.get(node.callee.object.name)?.node?.value;
-        if (mod?.callee?.name === 'standard_module') {
-          const entry = require('./standard-modules.ts')
-            .lookupStandardModule(mod.args?.[0]?.value, mod.args?.[1]?.value);
-          if (entry?.bindings.get(node.callee.field)?.kind === 'distribution') return true;
-        }
+        // A standard module's distribution (§09) is a measure constructor; the
+        // module entry's distribution set is the one source every layer reads.
+        if (require('./standard-modules.ts').moduleDistributionsOf(bindings)
+          .get(node.callee.object.name)?.has(node.callee.field)) return true;
       }
       if (!node.callee || node.callee.type !== 'Identifier') return false;
       const name = node.callee.name;

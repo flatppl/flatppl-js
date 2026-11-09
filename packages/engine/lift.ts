@@ -470,7 +470,8 @@ function liftInlineSubexpressions(bindings: any) {
   // holds every user binding at this point; lift-synthesized anons are
   // never boundary-kwarg names.
   const bindingNames = new Set<string>(out.keys());
-  const liftLowerCtx = { localScope: null, moduleNames, bindingNames };
+  const moduleDistributions = require('./standard-modules.ts').moduleDistributionsOf(out);
+  const liftLowerCtx = { localScope: null, moduleNames, bindingNames, moduleDistributions };
   let specializingCallback = false;
   function makeIdent(name: string, loc: any) {
     return { type: 'Identifier', name, loc: loc || null };

@@ -91,6 +91,24 @@ function standardModuleBinding(call: any, bindings: any, irField: string): Bindi
 }
 
 /**
+ * Alias → the REGISTRY distributions its `standard_module(name, compat)`
+ * provides, read off the source AST so the lowerer can tell a module
+ * distribution call (`hepphys.ContinuedPoisson(3.0)`, a measure) from a
+ * module function call (a value).
+ */
+function moduleDistributionsOf(bindings: Map<string, any>): Map<string, ReadonlySet<string>> {
+  const out = new Map<string, ReadonlySet<string>>();
+  for (const [name, b] of bindings) {
+    const v = b && (b.effectiveValue || b.node?.value);
+    if (v?.type !== 'CallExpr' || v.callee?.name !== 'standard_module') continue;
+    const [n, c] = (v.args || []).map((a: any) => a?.value);
+    const entry = typeof n === 'string' && typeof c === 'string' ? lookupStandardModule(n, c) : null;
+    if (entry?.distributions) out.set(name, entry.distributions);
+  }
+  return out;
+}
+
+/**
  * Register a standard module. Called once at engine boot per module;
  * subsequent calls for the same (name, compat) replace the previous
  * entry (useful for tests).
@@ -770,6 +788,7 @@ function _registerBuiltinStandardModules() {
 _registerBuiltinStandardModules();
 
 module.exports = {
+  moduleDistributionsOf,
   lookupStandardModule,
   standardModuleBinding,
   registerStandardModule,
