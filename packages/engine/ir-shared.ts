@@ -122,8 +122,6 @@ function resolveConstant(
     return null;
   }
   if (ir.kind === 'ref' && ir.ns === 'self') {
-    if (seen.has(ir.name)) return null;
-    seen.add(ir.name);
     // The orchestrator's pre-eval pass populates `fixedValues` for
     // every fixed-phase binding it can evaluate — including ones
     // whose RHS uses ops resolveConstant's own constant-fold table
@@ -142,11 +140,14 @@ function resolveConstant(
       // Fall through if the cached value isn't a finite number —
       // the legacy fold path may still work for special cases.
     }
+    // The cycle guard covers the current path only: `n + n` reads `n` twice
+    // along sibling branches, which is no cycle.
+    if (seen.has(ir.name)) return null;
     const b = bindings.get(ir.name);
     if (!b || !b.node || !b.node.value) return null;
     let bIR;
     try { bIR = lowerExpr(b.node.value); } catch (_) { return null; }
-    return resolveConstant(bIR, bindings, seen, fixedValues);
+    return resolveConstant(bIR, bindings, new Set(seen).add(ir.name), fixedValues);
   }
   // `lengthof(<ref>)` of a fixed-phase ARRAY value. The §22 dynamic-D
   // MvNormal lowering emits `iid(Normal(0,1), lengthof(<mu-ref>))` when
