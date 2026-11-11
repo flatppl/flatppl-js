@@ -3896,6 +3896,10 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   if (op && irShared.SAMPLEABLE_DISTRIBUTIONS && irShared.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
     return { kind: 'sample', distIR: ir };
   }
+  // Dirichlet, Multinomial, Wishart, … have their own handlers. The classifier's
+  // table names them, so an inline one draws exactly as a named one.
+  const leafKind = op && require('./derivations.ts').LEAF_DISTRIBUTION_KINDS[op];
+  if (leafKind) return { kind: leafKind, distIR: ir };
   if (op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
     const from = register(ir.args[0], 'truncate:base');
     const setDescr = irShared.parseSetIR(ir.args[1], childCtx.bindings);
@@ -4015,16 +4019,22 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   }
   // Applied unary adapters can expose an inline callable. Register it with
   // the same callable metadata that the named pushforward handler consumes.
+  // An inline `bijection(f, f_inv, logvolume)` (a lowered MvNormal in a chain
+  // body) carries its resolved metadata on the node, `ir.bijection`, as density
+  // reads it. The derivation passes that on, with the forward fn as fnRef.
   if (op === 'pushfwd' && ir.args?.length === 2) {
     const [fIR, mIR] = ir.args;
     let fnRef = fIR?.kind === 'ref' && fIR.ns === 'self' ? fIR.name : null;
-    if (fIR?.op === 'functionof') {
-      fnRef = register(fIR, 'pushfwd:fn');
+    const fwdIR = fIR?.op === 'bijection' ? fIR.args?.[0] : fIR;
+    if (!fnRef && fwdIR?.op === 'functionof') {
+      fnRef = register(fwdIR, 'pushfwd:fn');
       childCtx.bindings.get(fnRef).type = 'functionof';
     }
     if (fnRef && childCtx.bindings.has(fnRef)) {
       const from = _bridgeMeasureFrom(mIR, register, 'pushfwd:base');
-      return { kind: 'pushfwd', from, fnRef };
+      const d: any = { kind: 'pushfwd', from, fnRef };
+      if (fIR?.op === 'bijection' && ir.bijection) d.bijection = ir.bijection;
+      return d;
     }
   }
   // iid(M, n…) over a COMPOSITE inner — route to matIid for the REPEAT axis
@@ -4035,17 +4045,11 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   // draws all condition on atom i's shared value draws. Register the inner as a
   // synthetic binding (matIid resolves d.from by name). The iid-of-LEAF fast
   // path stays in materialiseMeasureIR (sampleN repeat=k pins per-atom params
-  // already), so ONLY composite inners route here; the dims must be integer
-  // literals (matIid's contract) or we leave it to the leaf default.
+  // already), so ONLY composite inners route here. The dims resolve as
+  // classifyIid resolves them, or we leave it to the leaf default.
   if (op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
-    const dims: number[] = [];
-    let dimsOk = true;
-    for (let di = 1; di < ir.args.length; di++) {
-      const dv = ir.args[di];
-      if (!dv || dv.kind !== 'lit' || !Number.isInteger(dv.value)) { dimsOk = false; break; }
-      dims.push(dv.value);
-    }
-    if (dimsOk) {
+    const dims = require('./derivations.ts').iidDims(ir, childCtx.bindings, childCtx.fixedValues);
+    if (dims) {
       const from = register(ir.args[0], 'iid:inner');
       return { kind: 'iid', from, dims };
     }
@@ -4162,14 +4166,10 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // iid(M, n…) — sample-major output [N, ...dims].
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
     const inner = ir.args[0];
-    const dims: number[] = [];
-    for (let di = 1; di < ir.args.length; di++) {
-      const d = ir.args[di];
-      if (!d || d.kind !== 'lit' || !Number.isInteger(d.value)) {
-        return Promise.reject(new Error(
-          'materialiseMeasureIR: iid dim must be integer literal'));
-      }
-      dims.push(d.value);
+    const dims = require('./derivations.ts').iidDims(ir, ctx.bindings, ctx.fixedValues);
+    if (!dims) {
+      return Promise.reject(new Error(
+        'materialiseMeasureIR: an iid size must resolve to a non-negative integer or a vector of them'));
     }
     const k = dims.reduce((p: number, n: number) => p * n, 1);
     const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
@@ -4222,11 +4222,23 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         : ir.args.map((v: any, i: number) => ({ name: 's' + i, value: v, source: null }));
     // Threaded child ctx: produced variates resolve from threadCache, every
     // other name delegates to the parent cache (shared ancestors, fixed refs).
+    // A produced variate is also a synthetic binding in a copy-on-write map,
+    // as `_bridgeRegister` installs its names. Ref collectors that keep only
+    // bindings (prepareDensityRefs, a kernel broadcast's parameters) then see
+    // the names getMeasure resolves.
     const threadCache = new Map<string, any>();
-    const childThread: any = Object.assign({}, ctx);
+    const threadBindings = new Map(ctx.bindings || []);
+    const childThread: any = Object.assign({}, ctx, { bindings: threadBindings });
     childThread.getMeasure = function (nn: string) {
       if (threadCache.has(nn)) return threadCache.get(nn);
       return ctx.getMeasure(nn);
+    };
+    const thread = (nn: string, value: any, pm: any) => {
+      threadCache.set(nn, pm);
+      if (!threadBindings.has(nn)) {
+        threadBindings.set(nn, { name: nn, ir: value, type: 'call', synthetic: true,
+          inferredType: (value && value.meta && value.meta.type) || null });
+      }
     };
     const produced: Array<{ name: string; m: any }> = [];
     let seq: Promise<void> = Promise.resolve();
@@ -4238,8 +4250,8 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         return materialiseMeasureIR(f.value, subCtx).then((m: any) => {
           produced.push({ name: f.name, m });
           const pm = Promise.resolve(m);
-          threadCache.set(f.name, pm);
-          if (f.source != null && f.source !== f.name) threadCache.set(f.source, pm);
+          thread(f.name, f.value, pm);
+          if (f.source != null && f.source !== f.name) thread(f.source, f.value, pm);
         });
       });
     });
@@ -4325,6 +4337,16 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         && ctx.bindings.has(fIR.name)) {
       return _bridgeToHandler(ir, ctx);
     }
+    // An inline callable: `functionof`, or a `bijection` (a lowered MvNormal
+    // in a chain body) whose metadata rides on `ir.bijection`.
+    if (fIR && fIR.kind === 'call' && (fIR.op === 'functionof' || fIR.op === 'bijection')) {
+      return _bridgeToHandler(ir, ctx);
+    }
+  }
+  // Multivariate and ragged leaves (Dirichlet, Multinomial, …) draw through
+  // their own handlers; the worker's sampleN has only scalar kernels.
+  if (require('./derivations.ts').LEAF_DISTRIBUTION_KINDS[ir.op]) {
+    return _bridgeToHandler(ir, ctx);
   }
   // Generative pushforward: lawof(<value expr>). After the lawof peel
   // (above), a body like transport's `y = (x + δ)³ · exp(x − b)` is a

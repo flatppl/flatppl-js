@@ -126,8 +126,11 @@ function measureToRefValue(m: any, name: string, label: string) {
     return valueLib.batchedScalar(m.samples);
   }
   if (m.fields) return measureToPerAtomRecords(m, name, label);
+  // A positional `joint(D1, D2)` materialises as a tuple of scalar
+  // components; its variate is the [N, D] vector they form (§06).
+  if (Array.isArray(m.elems) && m.elems.length > 0) return measureToParamValue(m, name, label);
   throw new Error(label + ': measure for "' + name +
-    '" has no .value, .samples, or .fields');
+    '" has no .value, .samples, .fields, or .elems');
 }
 
 /**
