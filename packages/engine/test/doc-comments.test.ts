@@ -78,13 +78,25 @@ test('doc: trailing single-line `... % ...` attaches to the same binding', () =>
     { markup: 'md', lines: ['Prior std. dev.'] });
 });
 
-test('doc: trailing doc terminates at `;` (transport-safe)', () => {
+test('doc: a trailing doc runs to the end of its line, through any `;`', () => {
   const r = engine.processSource(`mu = 0 % Prior mean.; sigma = 1`);
   assert.deepEqual(errors(r), []);
   assert.deepEqual(docOf(r, 'mu'),
-    { markup: 'md', lines: ['Prior mean.'] });
-  // Next binding is untouched.
-  assert.equal(docOf(r, 'sigma'), null);
+    { markup: 'md', lines: ['Prior mean.; sigma = 1'] });
+  assert.ok(!r.bindings.has('sigma'), 'sigma = 1 is doc text');
+});
+
+test('doc: a leading doc line with a `;` is one doc-comment', () => {
+  const r = engine.processSource(`% doc; text\nx = 1`);
+  assert.deepEqual(errors(r), []);
+  assert.deepEqual(docOf(r, 'x'), { markup: 'md', lines: ['doc; text'] });
+});
+
+test('doc: a `;` after a binding still separates it from a leading doc', () => {
+  const r = engine.processSource(`x = 1; % next\ny = 2`);
+  assert.deepEqual(errors(r), []);
+  assert.equal(docOf(r, 'x'), null);
+  assert.deepEqual(docOf(r, 'y'), { markup: 'md', lines: ['next'] });
 });
 
 // =====================================================================

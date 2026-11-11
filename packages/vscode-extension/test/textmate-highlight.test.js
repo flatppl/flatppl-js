@@ -41,6 +41,13 @@ test('the shipped highlighter loads its assets from the given URLs and paints so
   assert.deepEqual(classed, ['tok-ident:p', 'tok-op:~', 'tok-dist:Normal', 'tok-op:.', 'tok-func:invlogit', 'tok-op:.',
     'tok-ident:eta', 'tok-number:1.5', 'tok-comment:# note']);
   assert.equal(runs.map((r) => r.text).join(''), 'p ~ Normal.(invlogit.(eta), 1.5)  # note');
+  // §05: a `#` line comment and a `%` doc line run to the end of the line;
+  // a `;` inside them is comment text.
+  const comments = (src) => Array.from(tm.highlightText(src)).filter((r) => r.cls === 'tok-comment').map((r) => r.text.trim()).join('');
+  assert.equal(comments('a = 1.0  # one; b = 2.0'), '# one; b = 2.0');
+  assert.equal(comments('# one; two'), '# one; two');
+  assert.equal(comments('# a full-line comment'), '# a full-line comment');
+  assert.ok(comments('sigma = 1  % Prior std.; mu = 0').endsWith('% Prior std.; mu = 0'));
 });
 
 test('the panel loads the highlighter with its nonce and hands the viewer the asset URIs', () => {

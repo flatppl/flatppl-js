@@ -211,14 +211,13 @@ test('tokenizer: `;` inside parens stays SEMI (FlatPPJ kwargs split)', () => {
      T.IDENT, T.EQUALS, T.NUMBER, T.RPAREN]);
 });
 
-test('tokenizer: `#` line comment terminates on `;` as well as newline', () => {
-  const { tokens } = tokenize('a = 1 # cmt ; b = 2');
-  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
-  // The `;` terminates the comment, then acts as statement separator.
-  // Following `b = 2` becomes its own statement.
-  assert.deepEqual(types,
+test('tokenizer: `#` line comment runs to the end of its line, through any `;`', () => {
+  const { tokens } = tokenize('a = 1 # cmt ; b = 2\nc = 3');
+  const kept = tokens.filter((t: any) => t.type !== T.EOF);
+  assert.deepEqual(kept.map((t: any) => t.type),
     [T.IDENT, T.EQUALS, T.NUMBER, T.COMMENT, T.NEWLINE,
      T.IDENT, T.EQUALS, T.NUMBER]);
+  assert.equal(kept[3].value, '# cmt ; b = 2');
 });
 
 test('tokenizer: `###` block comment consumes lines until matching fence', () => {
