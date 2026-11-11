@@ -30,7 +30,6 @@ const {
   measureFromValue,
   setBoundsForMat,
   resolveFnBody,
-  measureToParamValue,
   measureToPerAtomRecords,
   inlineBoundaryDerivations,
   measureN,
@@ -40,6 +39,7 @@ const {
 // circuits the AST evaluateN path and calls the registry's atom-
 // batched forward directly — same hot path matMvNormal consumes.
 const bijRegistry = require('./bijection-registry.ts');
+const sampler = require('./sampler.ts');
 const derivations = require('./derivations.ts');
 
 function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
@@ -165,30 +165,19 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
             : valueLib.asValue(v);
           return Promise.resolve({ k, value: wrapped });
         }
-        // Atom-dependent param (5f-2). Only a DIRECT binding ref is
-        // supported — a compound expression over a per-atom binding
-        // (e.g. `lower_cholesky(<per-atom random cov>)`) would need
-        // per-atom expression evaluation, which is deferred.
-        if (pir && pir.kind === 'ref' && pir.ns === 'self'
-            && pir.name && ctx.bindings && ctx.bindings.has(pir.name)) {
-          return ctx.getMeasure(pir.name).then((pm: any) => {
-            parameterMeasures.push(pm);
-            // Flatten the param binding's measure to an atom-batched
-            // [N, …] Value. Handles .value (already a Value), composite
-            // .elems (e.g. `muv = [m1, m2]` → [N, D]), and scalar
-            // .samples — see measureToParamValue.
-            return {
-              k,
-              value: measureToParamValue(pm, pir.name,
-                `pushfwd param '${k}' for '${d.fnRef}'`),
-            };
-          });
-        }
-        return Promise.reject(new Error(
-          `pushfwd: bijection binding '${d.fnRef}' paramIRs.${k} for `
-          + `registryName='${bijMeta.registryName}' is a compound atom-`
-          + `dependent expression (not a direct binding ref) — e.g. `
-          + `lower_cholesky of a per-atom covariance; deferred`));
+        // Atom-dependent param (5f-2): a direct ref or an expression over
+        // per-atom refs, such as `lower_cholesky(diagmat([1.0, s]))`. Evaluate
+        // it over the atom batch, as density evaluates the same paramIR per
+        // point, giving b = [N, D] / L = [N, D, D] for the affine entry.
+        const label = `pushfwd param '${k}' for '${d.fnRef}'`;
+        return shared.prepareDensityRefs(pir, ctx, label).then((prep: any) => {
+          for (const pm of prep.parents) parameterMeasures.push(pm);
+          const v = sampler.evaluateExprN(pir, prep.refArrays, N, prep.fixedEnv, undefined);
+          if (!v || !Array.isArray(v.shape) || v.shape[0] !== N) {
+            throw new Error(`${label}: expected an atom-batched [${N}, …] value`);
+          }
+          return { k, value: v };
+        });
       });
       return Promise.all(paramFetches).then((entries: any[]) => {
         const params: any = {};
