@@ -77,9 +77,14 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
   // remain present per the additive invariant; failure returns null,
   // and we fall through to the scalar path which still works for
   // pre-§22 bindings (no registryName).
-  const bijMeta = (fBinding.bijection)
+  // An inline bijection hands its resolved metadata on the derivation; a stub
+  // forward shows there as a registry entry with no fForward.
+  const bijMeta = d.bijection || ((fBinding.bijection)
     ? derivations.resolveBijectionMeta(fBinding.bijection, ctx.bindings)
-    : null;
+    : null);
+  const stubForward = d.bijection
+    ? !!(d.bijection.registryName && !d.bijection.fForward)
+    : !!(fBinding.bijection && fBinding.bijection.stubForward);
   return ctx.getMeasure(d.from).then((M: any) => {
     const parameterMeasures: any[] = [];
     // Registry path for any vector-atom base, M.value of shape [N, D].
@@ -87,9 +92,9 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     // lifted MvNormal and affine bijections have a placeholder fn(_)
     // forward, so the AST path below must never apply it.
     const vectorBase = !!M.value && Array.isArray(M.value.shape) && M.value.shape.length === 2;
-    if (fBinding.bijection && fBinding.bijection.stubForward && !vectorBase) {
+    if (stubForward && !vectorBase) {
       return Promise.reject(new Error(
-        `pushfwd: bijection binding '${d.fnRef}' (registry '${fBinding.bijection.registryName}') `
+        `pushfwd: bijection binding '${d.fnRef}' (registry '${bijMeta && bijMeta.registryName}') `
         + `needs a vector-valued base, but '${d.from}' has no [N, D] atoms`));
     }
     if (bijMeta && bijMeta.registryName && vectorBase) {

@@ -120,6 +120,24 @@ const {
 const { isCallableLikeBindingType } = require('./ir-shared.ts');
 const { engineLimitation } = require('./limitations.ts');
 
+// A distribution outside the worker's scalar sampleN registry, by the
+// derivation kind whose handler draws it: the multivariate kinds give vector
+// or matrix atoms, and PoissonProcess gives ragged point sets (§2.3). Named
+// bindings and inline measure IR (materialiser bridge) both read this table.
+// `mvnormal` is the refusal channel for an MvNormal the lift did not lower to
+// `pushfwd(affine, iid(Normal, D))`.
+const LEAF_DISTRIBUTION_KINDS: Record<string, string> = {
+  MvNormal: 'mvnormal',
+  Dirichlet: 'dirichlet',
+  Multinomial: 'multinomial',
+  Wishart: 'wishart',
+  InverseWishart: 'inversewishart',
+  LKJCholesky: 'lkjcholesky',
+  LKJ: 'lkj',
+  BinnedPoissonProcess: 'binnedpoissonprocess',
+  PoissonProcess: 'poissonprocess',
+};
+
 // Smell D — propagate phase to lift-introduced anons.
 //
 // `liftInlineSubexpressions` runs AFTER analyzer.computePhases, so the
@@ -1167,46 +1185,9 @@ function classifyDerivation(
     // outside a recognized composite). `kind='mvnormal'` is the clean
     // REFUSAL channel for those: matMvNormal (mat-multivariate.ts) is a
     // thin per-binding error, not a materialiser.
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'MvNormal') {
-      return { kind: 'mvnormal', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'Dirichlet') {
-      return { kind: 'dirichlet', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'Multinomial') {
-      return { kind: 'multinomial', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'Wishart') {
-      return { kind: 'wishart', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'InverseWishart') {
-      return { kind: 'inversewishart', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'LKJCholesky') {
-      return { kind: 'lkjcholesky', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'LKJ') {
-      return { kind: 'lkj', distIR: normalizedRhsIR };
-    }
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'BinnedPoissonProcess') {
-      return { kind: 'binnedpoissonprocess', distIR: normalizedRhsIR };
-    }
-    // PoissonProcess(intensity) — variable-length point sets per atom. Unlike
-    // the fixed-shape multivariate kinds above, its atom is RAGGED (§2.3):
-    // matPoissonProcess assembles a ragged EmpiricalMeasure, walkPoissonProcess
-    // scores it (dedicated handlers, not the walkMultivariate/MV_DENSITY path).
-    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
-        && normalizedRhsIR.op === 'PoissonProcess') {
-      return { kind: 'poissonprocess', distIR: normalizedRhsIR };
-    }
+    const leafKind = normalizedRhsIR && normalizedRhsIR.kind === 'call'
+      && LEAF_DISTRIBUTION_KINDS[normalizedRhsIR.op];
+    if (leafKind) return { kind: leafKind, distIR: normalizedRhsIR } as Derivation;
 
     // Measure-algebra ops dispatch through MEASURE_OP_CLASSIFIERS
     // below. Each entry is one tightly-scoped handler that decides the
@@ -2394,33 +2375,32 @@ function _isRecordValuedMeasureBase(baseName: string, bindings: any): boolean {
     && Array.isArray(b.ir.fields));
 }
 
+// The axis sizes of `iid(M, size)`: size is a non-negative int or a vector of
+// them, and the legacy form takes variadic ints. A `vector(...)` size is one
+// int per axis. resolveConstant reads `fixedValues`, so a binding ref like
+// `n = lengthof(data)` resolves. Null when a size is not a non-negative int.
+function iidDims(iidIR: any, bindings: any, fixedValues?: any): number[] | null {
+  if (!iidIR || !Array.isArray(iidIR.args) || iidIR.args.length < 2) return null;
+  const tail = iidIR.args.slice(1);
+  const nodes: IRNode[] = (tail.length === 1 && tail[0]?.kind === 'call'
+    && tail[0].op === 'vector' && Array.isArray(tail[0].args)) ? tail[0].args : tail;
+  const dims: number[] = [];
+  for (const node of nodes) {
+    const n = resolveConstant(node, bindings, new Set(), fixedValues);
+    if (n == null || !Number.isInteger(n) || n < 0) return null;
+    dims.push(n);
+  }
+  return dims;
+}
+
 function classifyIid(
   rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
 ): DerivationIid | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
-  // New spec: iid(M, size) where size is a positive int or vector of
-  // positive ints. Legacy form accepts variadic positional ints. The
-  // single-vector-literal case (lowered as `vector(...)` IRCall) is
-  // unpacked into per-axis dims. `fixedValues` is consulted by
-  // resolveConstant so a binding ref like `n = lengthof(data)` resolves
-  // through the pre-eval cache instead of needing a constant-fold
-  // entry per surface op.
-  const dims: number[] = [];
-  const tail = rhsIR.args.slice(1);
-  let nodes: IRNode[] = tail;
-  if (tail.length === 1
-    && tail[0].kind === 'call'
-    && (tail[0] as any).op === 'vector'
-    && Array.isArray((tail[0] as any).args)) {
-    nodes = (tail[0] as any).args;
-  }
-  for (const node of nodes) {
-    const n = resolveConstant(node, bindings, new Set(), fixedValues);
-    if (n == null || !Number.isInteger(n) || n < 0) return null;
-    dims.push(n);
-  }
+  const dims = iidDims(rhsIR, bindings, fixedValues);
+  if (dims == null) return null;
   // §06 iid: a derived-zero record product has an empty table variate.
   // Scalar empty-product classification remains separate from the table path.
   if (dims.length === 1 && dims[0] === 0) {
@@ -6497,6 +6477,8 @@ module.exports = {
   classifySuperpose,
   classifyRecordOrJoint,
   classifyIid,
+  iidDims,
+  LEAF_DISTRIBUTION_KINDS,
   _isRecordValuedMeasureBase,
   classifyKernelBroadcast,
   classifyLogdensityof,

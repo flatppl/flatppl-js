@@ -531,6 +531,8 @@ export interface DerivationPushfwd {
   name?: string;
   from: string;
   fnRef: string;
+  /** Resolved metadata of an inline `bijection(...)`, as `ir.bijection` carries it. */
+  bijection?: any;
 }
 
 /** Bayesian update — posterior = importance-reweighted prior. */
