@@ -223,10 +223,8 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     //   - Block comment `###` on its own line (with optional leading
     //     horizontal whitespace), closed by a matching `###` on its
     //     own line. Content between fences is consumed and discarded.
-    //   - Line comment `#`, terminated by the next newline OR
-    //     semicolon — whichever comes first — so source survives
-    //     newline-collapsing transport channels (spec §05 Statements:
-    //     newlines and `;` are equivalent separators).
+    //   - Line comment `#`, running to the end of its line. A `;`
+    //     inside it is comment text, not a statement separator.
     if (ch === '#') {
       // Block-comment fence detection: `###` ALONE ON A LINE — spec
       // §05 EBNF `HWS* "###" HWS* Newline`. Anything else on the line
@@ -278,7 +276,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       }
       // Line comment.
       let text = '';
-      while (pos < source.length && !isNewline(at()) && at() !== ';') {
+      while (pos < source.length && !isNewline(at())) {
         text += advance();
       }
       tokens.push(token(T.COMMENT, text, startLine, startCol, line, col));
@@ -359,7 +357,8 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
         }
         continue;
       }
-      // Single-line `%` doc-comment. Terminated by `\n` or `;`.
+      // Single-line `%` doc-comment, running to the end of its line like a
+      // `#` line comment; a `;` inside it is doc text.
       advance();   // consume the leading `%`
       // Optional markup tag immediately after, no whitespace.
       let markup = 'md';
@@ -379,10 +378,10 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
         }
       }
       // Skip one space after the tag (cosmetic; spec's `%md content`
-      // shape). The content is the rest of the line / up to `;`.
+      // shape). The content is the rest of the line.
       if (at() === ' ' || at() === '\t') advance();
       let content = '';
-      while (pos < source.length && !isNewline(at()) && at() !== ';') {
+      while (pos < source.length && !isNewline(at())) {
         content += advance();
       }
       // Right-trim trailing whitespace.

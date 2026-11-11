@@ -93,22 +93,34 @@ b = 2`);
   assert.ok(r.bindings.has('a') && r.bindings.has('b'));
 });
 
-test('§05: `###` in mid-line is just a line comment (terminated by newline or `;`)', () => {
+test('§05: `###` in mid-line is just a line comment, ending at the newline', () => {
   const r = engine.processSource(`a = 1 ### still a line comment\nb = 2`);
   assert.deepEqual(errors(r), []);
   assert.ok(r.bindings.has('a') && r.bindings.has('b'));
 });
 
 // =====================================================================
-// Combined: `;` terminates line comments
+// Combined: a `;` inside a comment is comment text
 // =====================================================================
 
-test('§05: `#` line comment is terminated by `;`', () => {
-  // Lets source like `% Prior mean.; mu = 0` (and the `#` equivalent)
-  // survive newline-collapsing transport.
-  const r = engine.processSource(`a = 1 # comment ; b = 2`);
+test('§05: a `;` inside a `#` line comment does not end it', () => {
+  const r = engine.processSource(`a = 1.0  # one; b = 2.0`);
   assert.deepEqual(errors(r), []);
-  assert.ok(r.bindings.has('a') && r.bindings.has('b'));
+  assert.ok(r.bindings.has('a'));
+  assert.ok(!r.bindings.has('b'), 'b = 2.0 is comment text');
+});
+
+test('§05: a comment-only line with a `;` parses', () => {
+  const r = engine.processSource(`# one; two\nx = 1`);
+  assert.deepEqual(errors(r), []);
+  assert.deepEqual([...r.bindings.keys()].filter((n: string) => !n.startsWith('__')), ['x']);
+});
+
+test('§05: a `;` inside a `###` block comment is comment text', () => {
+  const r = engine.processSource(`###\nc = 1; d = 2\n###\nx = 1`);
+  assert.deepEqual(errors(r), []);
+  assert.ok(r.bindings.has('x'));
+  assert.ok(!r.bindings.has('c') && !r.bindings.has('d'));
 });
 
 test('§05: comment-only file with `###` block parses cleanly', () => {
