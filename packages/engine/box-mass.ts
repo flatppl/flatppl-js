@@ -31,13 +31,21 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
   arrayVariate: boolean, nodeBudget: number): any | null {
   const dims = axes.length;
   const zero = () => Array(dims).fill(0);
-  const mentions = (n: any): boolean => {
+  // A shared intermediate is a `let` name (let-view.ts): each match point
+  // reads through it, and an expression taken out of the body is closed
+  // over the assigns it reads.
+  const view = require('./let-view.ts').letView(body);
+  body = view.ir;
+  const { resolve, close } = view;
+  const textual = (n: any): boolean => {
     if (!n || typeof n !== 'object') return false;
-    if (Array.isArray(n)) return n.some(mentions);
+    if (Array.isArray(n)) return n.some(textual);
     if (n.kind === 'ref' && n.name === param) return true;
-    return Object.keys(n).some((k) => k !== 'loc' && k !== 'meta' && mentions(n[k]));
+    return Object.keys(n).some((k) => k !== 'loc' && k !== 'meta' && textual(n[k]));
   };
+  const mentions = view.mentions(textual);
   const coordinate = (n: any): number => {
+    n = resolve(n);
     if (!arrayVariate) return n?.kind === 'ref' && n.name === param ? 0 : -1;
     if (n?.kind !== 'call' || n.op !== 'get' || n.args?.length !== 2
         || n.args[0]?.kind !== 'ref' || n.args[0].name !== param) return -1;
@@ -49,6 +57,7 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
   // not introduce a non-polynomial dependence on the integration coordinates.
   const degree = (n: any): number[] | null => {
     if (!mentions(n)) return zero();
+    n = resolve(n);
     const axis = coordinate(n);
     if (axis >= 0) { const d = zero(); d[axis] = 1; return d; }
     if (n.kind !== 'call' || !Array.isArray(n.args)) return null;
@@ -56,7 +65,7 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
     if (!a) return null;
     if (n.op === 'neg') return a;
     if (n.op === 'pow') {
-      const p = n.args[1];
+      const p = resolve(n.args[1]);
       return p?.kind === 'lit' && Number.isInteger(p.value) && p.value >= 0 && p.value <= 9
         ? a.map((d) => d * p.value) : null;
     }
@@ -70,7 +79,8 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
   // Structural affine coefficients avoid subtracting f(0) from f(e_i), which
   // can erase a small slope when the constant term is large.
   const affine = (n: any): any[] | null => {
-    if (!mentions(n)) return [n, ...axes.map(() => lit(0))];
+    if (!mentions(n)) return [close(n), ...axes.map(() => lit(0))];
+    n = resolve(n);
     const axis = coordinate(n);
     if (axis >= 0) return [lit(0), ...axes.map((_, i) => lit(i === axis ? 1 : 0))];
     if (n.kind !== 'call' || !Array.isArray(n.args)) return null;
@@ -78,13 +88,13 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
     if (!a) return null;
     if (n.op === 'neg') return a.map((c) => binary('sub', lit(0), c));
     if (n.op === 'divide' && !mentions(n.args[1])) {
-      return a.map((c) => binary('divide', c, n.args[1]));
+      return a.map((c) => binary('divide', c, close(n.args[1])));
     }
     if (n.op === 'mul') {
-      if (!mentions(n.args[1])) return a.map((c) => binary('mul', c, n.args[1]));
+      if (!mentions(n.args[1])) return a.map((c) => binary('mul', c, close(n.args[1])));
       if (!mentions(n.args[0])) {
         const b = affine(n.args[1]);
-        return b && b.map((c) => binary('mul', n.args[0], c));
+        return b && b.map((c) => binary('mul', close(n.args[0]), c));
       }
     }
     if (n.op === 'add' || n.op === 'sub') {
@@ -93,8 +103,9 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
     }
     return null;
   };
-  if (body.kind === 'call' && body.op === 'exp' && body.args?.length === 1) {
-    const coeff = affine(body.args[0]);
+  const root = resolve(body);
+  if (root.kind === 'call' && root.op === 'exp' && root.args?.length === 1) {
+    const coeff = affine(root.args[0]);
     if (!coeff) return null;
     let logArea = lit(0);
     const corner: any[] = [];
@@ -115,7 +126,7 @@ function boxLogMass(body: any, param: string, axes: Array<{ lo: number; hi: numb
     // Evaluate the original exponent at the maximizing corner. Expanding
     // t*(x-1) into -t+t*x would lose log(t) when t is large and the peak is 0.
     const point = arrayVariate ? call('vector', ...corner) : corner[0];
-    const peak = mapIR(body.args[0], (n: any) => n?.kind === 'ref' && n.name === param ? point : n);
+    const peak = mapIR(close(root.args[0]), (n: any) => n?.kind === 'ref' && n.name === param ? point : n);
     // Subtract the peak before multiplying the slopes. Subtracting log Z from
     // a large uncentered exponent loses the small log-area correction, e.g.
     // exp(1e17*x) at x=1 must score log(1e17), not a rounded multiple of 16.

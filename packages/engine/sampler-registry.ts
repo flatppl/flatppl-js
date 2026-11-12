@@ -2214,8 +2214,8 @@ function resolveParamsN(
   // shape can be batch-resolved; const-region / ref-region supports fall
   // back. Mirrors customResolveParams' kwargs.support|positional[0] pick.
   if (typeof entry.customResolveParams === 'function') {
-    const supportIR = ('support' in kwargs) ? kwargs.support
-                    : (positional.length > 0 ? positional[0] : null);
+    const supportIR = require('./let-view.ts').topOf(('support' in kwargs) ? kwargs.support
+                    : (positional.length > 0 ? positional[0] : null));
     if (!supportIR || supportIR.kind !== 'call' || supportIR.op !== 'interval'
         || !Array.isArray(supportIR.args) || supportIR.args.length !== 2) {
       return null;   // non-interval support — fall back to the scalar path

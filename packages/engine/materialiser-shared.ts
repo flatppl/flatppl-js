@@ -539,7 +539,25 @@ function inlineCallableRefs(ir: any, bindings: any): any {
 // per-atom accessor — both keyed by bare self-ref name — still resolve them.
 // Measures / draws carry a derivation and are left as refs for the density
 // walker; boundary inputs are stopped before inlining. Cycle-guarded.
-function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any): any {
+// With `opts.letForm`, an evaluable value binding read more than once is bound
+// once in a `let` around the result and its refs stay refs, so it is
+// evaluated once rather than copied into every use. A binding read once is
+// inlined as before. Function bodies take this form.
+// `opts.valueLets` applies it to each value-position subtree of a measure IR
+// (a kernel body), keeping the measure structure the density walkers read.
+function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any,
+    opts?: { letForm?: boolean; valueLets?: boolean }): any {
+  if (opts && opts.valueLets) return _valueLets(ir, boundarySet, ctx);
+  return _inlineBoundary(ir, boundarySet, ctx, !!(opts && opts.letForm));
+}
+
+function _inlineBoundary(ir: any, boundarySet: Set<string>, ctx: any, letForm: boolean): any {
+  const assigns: Array<{ name: string; value: any }> = [];
+  const letBound = new Set<string>();
+  const leafBound = new Map<string, any>();
+  // Reads per binding over the whole expansion, from a first counting pass.
+  const reads = new Map<string, number>();
+  let counting = false;
   const bindings = ctx && ctx.bindings;
   const derivations = ctx && ctx.derivations;
   // Fixed values belong to this initialized context (§04 phases). An explicit
@@ -576,10 +594,25 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
   // The memo is gated on `visiting.size === 0`: inside a cycle-guarded
   // inlining the answer for a node depends on which names are currently being
   // inlined, so it is not a pure function of the node there.
+  // Names bound by a `let` already in the input stay refs inside its scope.
+  const letScope = new Set<string>();
+  function walkLet(node: any): any {
+    const added: string[] = [];
+    let changed = false;
+    const inner = (node.assigns || []).map((a: any) => {
+      const value = walk(a.value);
+      if (!letScope.has(a.name)) { letScope.add(a.name); added.push(a.name); }
+      if (value !== a.value) changed = true;
+      return value === a.value ? a : { ...a, value };
+    });
+    const body = walk(node.body);
+    for (const n of added) letScope.delete(n);
+    return changed || body !== node.body ? { ...node, assigns: inner, body } : node;
+  }
   const memo = new Map<any, any>();
   function walk(node: any): any {
     if (node == null || typeof node !== 'object') return node;
-    const memoable = visiting.size === 0;
+    const memoable = visiting.size === 0 && letScope.size === 0;
     if (memoable && memo.has(node)) return memo.get(node);
     const result = walkNode(node);
     if (memoable) memo.set(node, result);
@@ -595,9 +628,11 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       }
       return changed ? out : node;
     }
+    if (node.kind === 'call' && node.op === 'let') return walkLet(node);
     if (node.kind === 'ref' && node.ns === 'self' && node.name) {
       const name = node.name;
       if (boundarySet.has(name)) return node;     // fed boundary input — keep
+      if (letScope.has(name)) return node;        // bound by an enclosing let
       if (visiting.has(name)) { cycleCount++; return node; }
       if (completedBindings.has(name)) return completedBindings.get(name);
       const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, name)
@@ -639,6 +674,30 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
           // Keep prepared tensor data in the existing fixed-value channel.
           if (valueLib.isValue(value) && value.shape.length > 0) return node;
         }
+        if (letForm && !isReferenceMeasure && counting) {
+          const n = (reads.get(name) || 0) + 1;
+          reads.set(name, n);
+          if (n === 1) {
+            visiting.add(name);
+            walk(target.ir);
+            visiting.delete(name);
+          }
+          return node;
+        }
+        if (letForm && !isReferenceMeasure && (reads.get(name) || 0) > 1) {
+          if (leafBound.has(name)) return leafBound.get(name);
+          if (!letBound.has(name)) {
+            visiting.add(name);
+            const value = walk(target.ir);
+            visiting.delete(name);
+            // Copying a leaf duplicates no work, and a recognizer reads a
+            // literal bound where it stands.
+            if (isLeafIR(value)) { leafBound.set(name, value); return value; }
+            letBound.add(name);
+            assigns.push({ name, value });
+          }
+          return node;
+        }
         const before = cycleCount;
         visiting.add(name);
         const sub = walk(target.ir);
@@ -672,7 +731,95 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
     }
     return result;
   }
-  return walk(ir);
+  if (letForm) {
+    counting = true;
+    walk(ir);
+    counting = false;
+    memo.clear();
+    completedBindings.clear();
+  }
+  const root = walk(ir);
+  return assigns.length ? { kind: 'call', op: 'let', assigns, body: root, loc: ir && ir.loc } : root;
+}
+
+// Measure ops and distributions whose arguments are value positions.
+function _isMeasureNode(node: any, ctx: any): boolean {
+  if (!node || node.kind !== 'call' || node.target) return false;
+  const { DISTRIBUTIONS, MEASURE_OPS } = require('./builtins.ts');
+  return DISTRIBUTIONS.has(node.op) || MEASURE_OPS.has(node.op)
+    || !!require('./derivations.ts').LEAF_DISTRIBUTION_KINDS[node.op];
+}
+
+// `inlineBoundaryDerivations(…, {valueLets})` for a measure IR (a kernel
+// body): measure nodes keep their structure and a ref to a measure binding is
+// expanded as before, while each value-position subtree (a distribution
+// parameter, an iid size, a weight expression) takes the let form, so
+// sharing inside a parameter expression is evaluated once.
+// A pure value expression: no measure, callable or law node anywhere in it,
+// and no distribution named as a callee (`Normal.(m, 1)` is a measure).
+function isPureValueIR(ir: any, ctx?: any): boolean {
+  const { forEachIRChild } = require('./ir-walk.ts');
+  const { DISTRIBUTIONS } = require('./builtins.ts');
+  const { LEAF_DISTRIBUTION_KINDS } = require('./derivations.ts');
+  const NOT_VALUE = new Set(['functionof', 'kernelof', 'lawof', 'draw', 'bijection']);
+  const checked = new Map<any, boolean>();
+  function isValue(n: any): boolean {
+    if (!n || typeof n !== 'object') return true;
+    if (checked.has(n)) return checked.get(n)!;
+    if (n.kind === 'ref' && n.ns === 'self' && (DISTRIBUTIONS.has(n.name) || LEAF_DISTRIBUTION_KINDS[n.name])) {
+      checked.set(n, false);
+      return false;
+    }
+    let ok = !(n.kind === 'call' && (_isMeasureNode(n, ctx) || NOT_VALUE.has(n.op)));
+    if (ok) forEachIRChild(n, (c: any) => { if (ok && !isValue(c)) ok = false; });
+    checked.set(n, ok);
+    return ok;
+  }
+  return isValue(ir);
+}
+
+// A literal (a negative one lowers to `neg(lit)`), a constant or a reference:
+// a value whose copies cost nothing to evaluate, so it is never let-bound.
+function isLeafIR(n: any): boolean {
+  if (!n || typeof n !== 'object') return true;
+  if (n.kind === 'lit' || n.kind === 'const' || n.kind === 'ref') return true;
+  return n.kind === 'call' && n.op === 'neg' && n.args?.length === 1 && n.args[0]?.kind === 'lit';
+}
+
+// The keys mapIRChildren rewrites. Any other key (a pushforward's
+// `bijection`) is inlined as a whole, from the node's plain form.
+const _MAPPED_CHILD_KEYS = new Set(['callee', 'args', 'kwargs', 'fields', 'assigns', 'body',
+  'branches', 'selector', 'logweights', 'loc', 'meta']);
+
+function _valueLets(ir: any, boundarySet: Set<string>, ctx: any): any {
+  const { mapIRChildren } = require('./ir-walk.ts');
+  function structural(n: any, plain: any): any {
+    let out = mapIRChildren(n, rec);
+    for (const k in n) {
+      if (_MAPPED_CHILD_KEYS.has(k) || plain[k] === n[k]) continue;
+      if (out === n) out = { ...n };
+      out[k] = plain[k];
+    }
+    return out;
+  }
+  function rec(n: any): any {
+    if (!n || typeof n !== 'object') return n;
+    const plain = inlineBoundaryDerivations(n, boundarySet, ctx);
+    if (n.kind === 'call' && _isMeasureNode(n, ctx)) return structural(n, plain);
+    // A record of measures, or a broadcast of a distribution: its value
+    // positions take the let form one by one. A `let` stays whole, so its
+    // names keep their scope.
+    if (!isPureValueIR(plain, ctx)) {
+      // A function inlined by name keeps the let form in its body too.
+      if (n.kind === 'ref' && plain !== n && plain?.kind === 'call' && plain.op === 'functionof') {
+        const target = ctx?.bindings?.get?.(n.name);
+        if (target?.ir?.kind === 'call' && target.ir.op === 'functionof') return rec(target.ir);
+      }
+      return n.kind === 'ref' || (n.kind === 'call' && n.op === 'let') ? plain : structural(n, plain);
+    }
+    return inlineBoundaryDerivations(n, boundarySet, ctx, { letForm: true });
+  }
+  return rec(ir);
 }
 
 function prepareDensityRefs(ir: any, ctx: any, label: string) {
@@ -1480,6 +1627,8 @@ module.exports = {
   measureToParamValue,
   measureToPerAtomRecords,
   inlineBoundaryDerivations,
+  isPureValueIR,
+  isLeafIR,
   tileMeasureAtomMajor,
   collectRefArrays,
   prepareDensityRefs,

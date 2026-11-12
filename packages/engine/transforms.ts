@@ -79,6 +79,8 @@ function transformFor(support: any) {
 // caller decides whether infinite/missing bounds are acceptable.
 function regionBounds(ir: any, resolveArg: (a: any) => number): [number, number] | null {
   if (!ir) return null;
+  // A region with shared bounds is a `let` (let-view.ts).
+  if (ir.kind === 'call' && ir.op === 'let') ir = require('./let-view.ts').letView(ir).top();
   if (ir.kind === 'call' && ir.op === 'interval'
       && Array.isArray(ir.args) && ir.args.length === 2) {
     return [resolveArg(ir.args[0]), resolveArg(ir.args[1])];

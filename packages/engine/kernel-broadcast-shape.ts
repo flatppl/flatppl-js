@@ -1236,6 +1236,11 @@ function detectGenerativeKernelBinding(
       if (Array.isArray(node.fields)) {
         for (const f of node.fields) stack.push(f && f.value);
       }
+      // A `let` binding graph's assigns and body are part of the expression.
+      if (node.op === 'let') {
+        for (const a of node.assigns || []) stack.push(a && a.value);
+        stack.push(node.body);
+      }
       // functionof bodies inside a value-expr are not walked for draws
       // (a nested kernel definition's draws are that kernel's, not ours).
     }

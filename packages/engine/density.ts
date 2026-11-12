@@ -804,20 +804,32 @@ function binomialLogpdf(ir: IRNode) {
 // Keep log-space tilt scoring outside the ordinary leaf's atom loop.
 function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
   const ordinaryLogpdf = kernelName === 'Binomial' ? binomialLogpdf(ir) : densityPrims.builtinLogdensityofPositional;
-  let prob = (ir as any).kwargs?.p || (ir as any).args?.[kernelName === 'Binomial' ? 1 : 0];
-  while (prob?.op === 'checked') prob = prob.args[0];
+  // A parameter may be a `let` graph (let-view.ts): the tilt markers sit on
+  // its resolved nodes, and a natural parameter taken out of it is closed
+  // over the assigns it reads.
+  const { letView } = require('./let-view.ts');
+  const param = (p: any) => {
+    const view = letView(p);
+    let n = view.resolve(view.ir);
+    while (n?.op === 'checked') n = view.resolve(n.args[0]);
+    return { n, view };
+  };
+  const pr = param((ir as any).kwargs?.p || (ir as any).args?.[kernelName === 'Binomial' ? 1 : 0]);
+  const prob = pr.n;
   const logOdds = (kernelName === 'Bernoulli' || kernelName === 'Binomial')
-    && prob?.exponentialTiltLogOdds ? prob.args[0] : null;
-  const logFailure = kernelName === 'Geometric' && prob?.op === 'neg'
-    && prob.args[0]?.exponentialTiltLogFailure ? prob.args[0].args[0] : null;
-  let rateParam = (ir as any).kwargs?.rate || (ir as any).args?.[0];
-  while (rateParam?.op === 'checked') rateParam = rateParam.args[0];
-  const logRate = kernelName === 'Poisson' && rateParam?.exponentialTiltLogRate ? rateParam.args[0] : null;
-  const tailParam = (ir as any).kwargs?.beta || (ir as any).args?.[1];
+    && prob?.exponentialTiltLogOdds ? pr.view.close(prob.args[0]) : null;
+  const probArg = prob?.op === 'neg' ? pr.view.resolve(prob.args[0]) : null;
+  const logFailure = kernelName === 'Geometric' && probArg?.exponentialTiltLogFailure
+    ? pr.view.close(probArg.args[0]) : null;
+  const ra = param((ir as any).kwargs?.rate || (ir as any).args?.[0]);
+  const rateParam = ra.n;
+  const logRate = kernelName === 'Poisson' && rateParam?.exponentialTiltLogRate ? ra.view.close(rateParam.args[0]) : null;
+  const ta = param((ir as any).kwargs?.beta || (ir as any).args?.[1]);
+  const tailParam = ta.n;
   const inverseFailure = kernelName === 'NegativeBinomial' && tailParam?.exponentialTiltLogInverseFailure
-    ? tailParam.args[0].args[0] : null;
+    ? ta.view.close(ta.view.resolve(tailParam.args[0]).args[0]) : null;
   const logMean = kernelName === 'NegativeBinomial2' && rateParam?.exponentialTiltLogMean
-    ? rateParam.args[0].args[0] : null;
+    ? ra.view.close(ra.view.resolve(rateParam.args[0]).args[0]) : null;
   // Preserve rare-event scores when the equivalent sampler parameter rounds
   // or exceeds float range. Natural parameters remain ordinary IR children,
   // so reification and substitution keep them attached to current inputs.
@@ -1395,7 +1407,8 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   if (typeof parseSet !== 'function') {
     throw new Error('density: truncate requires parseSet opt');
   }
-  const set: any = ir.args[1];
+  // A set with shared bounds is a `let` (let-view.ts).
+  const set: any = require('./let-view.ts').letView(ir.args[1]).top();
   // In points-batched mode the N axis indexes evaluation points: atom i scores
   // `points[i]`, so the support gate is per point. Gating every atom on the
   // first point's membership let one out-of-support first point send every
@@ -1784,7 +1797,7 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
   const parseSet = opts && opts.parseSet;
   if (typeof parseSet !== 'function') return null;
   const callEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
-  const setIR = truncateIR.args[1];
+  const setIR = require('./let-view.ts').topOf(truncateIR.args[1]);
   const setDescr = setIR?.op === 'interval' && setIR.args?.length === 2
     ? { kind: 'interval', lo: +samplerLib.evaluateExpr(setIR.args[0], callEnv),
       hi: +samplerLib.evaluateExpr(setIR.args[1], callEnv) }
@@ -2928,6 +2941,11 @@ function _collectSelfRefNames(ir: any, out: Set<string>): void {
   if (Array.isArray(ir.args)) for (const a of ir.args) _collectSelfRefNames(a, out);
   if (ir.kwargs) for (const k in ir.kwargs) _collectSelfRefNames(ir.kwargs[k], out);
   if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectSelfRefNames(f && f.value, out);
+  // A `let` binding graph: its assigns and body are part of the expression.
+  if (ir.op === 'let') {
+    for (const a of ir.assigns || []) _collectSelfRefNames(a && a.value, out);
+    _collectSelfRefNames(ir.body, out);
+  }
 }
 
 // One Monte-Carlo marginal estimate of log p(z | env), drawing M latents from
@@ -4511,6 +4529,16 @@ function _atomSlice(v: any, i: number): any {
 function _exprUsesAny(ir: any, names: string[]): boolean {
   if (!ir || typeof ir !== 'object') return false;
   if (ir.kind === 'ref' && names.indexOf(ir.name) >= 0) return true;
+  // A `let` name shadows a like-named outer name for the assigns after it
+  // and for the body.
+  if (ir.kind === 'call' && ir.op === 'let') {
+    let free = names;
+    for (const a of ir.assigns || []) {
+      if (_exprUsesAny(a.value, free)) return true;
+      free = free.filter((name: string) => name !== a.name);
+    }
+    return _exprUsesAny(ir.body, free);
+  }
   if (ir.body) {
     const captured = ir.op === 'functionof' && Array.isArray(ir.params)
       ? names.filter(name => !ir.params.includes(name)) : names;

@@ -135,6 +135,7 @@ class ProfileGaps {
 // for unrecognised sets, just without the hard crash).
 function makeParseSet(env: any) {
   return (setIR: any) => {
+    if (setIR && setIR.kind === 'call' && setIR.op === 'let') setIR = require('./let-view.ts').letView(setIR).top();
     const d = irShared.parseSetIR(setIR, null);
     if (d) return d;
     if (setIR && setIR.kind === 'call' && setIR.op === 'interval'
@@ -226,6 +227,66 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
   let philox: any = _stateFromSeed(opts.seed);
   let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
   let retainedBuffers = new WeakSet<ArrayBufferLike>();
+  // One batched evaluateN result as a `samples` reply: scalar atoms, a
+  // vector-atom buffer with its dims and levels, and complex planes.
+  function packN(result: any, count: number): any {
+    let out, dims, imag, levels;
+    if (result && result.BYTES_PER_ELEMENT !== undefined
+        && result.length === count) {
+      out = result;  // Float64Array(count) — happy path
+    } else if (typeof result === 'number' || typeof result === 'boolean') {
+      // Atom-independent scalar — broadcast to the batch.
+      out = new Float64Array(count);
+      out.fill(+result);
+    } else if (result && Array.isArray(result.shape) && result.data
+               && result.data.BYTES_PER_ELEMENT !== undefined) {
+      // Complex Value: carry the imaginary buffer alongside the
+      // real samples so the main thread can build a complex
+      // Measure (planar re/im preserved across postMessage —
+      // structured clone copies both Float64Arrays).
+      if (result.dtype === 'complex'
+          && result.im && result.im.BYTES_PER_ELEMENT !== undefined) {
+        imag = result.im;
+      }
+      // Value result (shape-tagged). Atom-batched
+      // scalar (shape=[N]) returns the data buffer; vector-atom
+      // (shape=[N, k]) returns the flat data + dims so the
+      // materialiser can mark the resulting Measure as
+      // vector-atom (matEvaluate threads dims into arrayMeasure).
+      if (result.shape.length === 0) {
+        // A fixed scalar law can retain its atom-independent Value
+        // through arithmetic. Expand that scalar just like a number.
+        out = new Float64Array(count).fill(result.data[0]);
+        if (imag) {
+          const parts = require('./value.ts').readComplex(result);
+          imag = new Float64Array(count).fill(parts.im[0]);
+        }
+      } else if (result.shape.length === 1 && result.shape[0] === count) {
+        out = result.data;
+      } else if (result.shape.length >= 2 && result.shape[0] === count) {
+        out = result.data;
+        dims = result.shape.slice(1);
+        // A nested cell (§03 an array of arrays) keeps its levels.
+        levels = valueLib.levelAxesOf(result);
+      } else {
+        throw new Error('evaluateN: Value result has unexpected shape ['
+          + result.shape.join(',') + '] for count=' + count);
+      }
+    } else {
+      throw new Error('evaluateN: expression produced non-scalar per-atom '
+        + 'result (got ' + (typeof result) + '); only scalar exprs are '
+        + 'supported on this path');
+    }
+    // transferablesOf moves the result buffer out of this worker. A
+    // borrowed env result must own a copy before that move, or the next
+    // request observes detached fixed data. Fresh results stay zero-copy.
+    if (retainedBuffers.has(out.buffer)) out = out.slice();
+    const reply: any = { type: 'samples', samples: out, logWeights: null };
+    if (dims) reply.dims = dims;
+    if (levels && levels.length > 0) reply.levels = levels;
+    if (imag) reply.imag = imag;
+    return reply;
+  }
   // Values, records and tables may alias storage (including subarray views).
   // Index buffers when inputs enter the session; replying needs only an O(1)
   // ownership check. Never walk numeric elements or rescan the merged env.
@@ -528,67 +589,15 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const count = msg.count | 0;
           if (count <= 0) throw new Error(`evaluateN.count must be positive integer (got ${msg.count})`);
           const refArrays = msg.refArrays || null;
-          const result = samplerLib.evaluateExprN(msg.ir, refArrays, count, env);
-          let out, dims, imag, levels;
-          if (result && result.BYTES_PER_ELEMENT !== undefined
-              && result.length === count) {
-            out = result;  // Float64Array(count) — happy path
-          } else if (typeof result === 'number' || typeof result === 'boolean') {
-            // Atom-independent scalar — broadcast to the batch.
-            out = new Float64Array(count);
-            out.fill(+result);
-          } else if (result && Array.isArray(result.shape) && result.data
-                     && result.data.BYTES_PER_ELEMENT !== undefined) {
-            // Complex Value: carry the imaginary buffer alongside the
-            // real samples so the main thread can build a complex
-            // Measure (planar re/im preserved across postMessage —
-            // structured clone copies both Float64Arrays).
-            if (result.dtype === 'complex'
-                && result.im && result.im.BYTES_PER_ELEMENT !== undefined) {
-              imag = result.im;
-            }
-            // Value result (shape-tagged). Atom-batched
-            // scalar (shape=[N]) returns the data buffer; vector-atom
-            // (shape=[N, k]) returns the flat data + dims so the
-            // materialiser can mark the resulting Measure as
-            // vector-atom (matEvaluate threads dims into arrayMeasure).
-            if (result.shape.length === 0) {
-              // A fixed scalar law can retain its atom-independent Value
-              // through arithmetic. Expand that scalar just like a number.
-              out = new Float64Array(count).fill(result.data[0]);
-              if (imag) {
-                const parts = require('./value.ts').readComplex(result);
-                imag = new Float64Array(count).fill(parts.im[0]);
-              }
-            } else if (result.shape.length === 1 && result.shape[0] === count) {
-              out = result.data;
-            } else if (result.shape.length >= 2 && result.shape[0] === count) {
-              out = result.data;
-              dims = result.shape.slice(1);
-              // A nested cell (§03 an array of arrays) keeps its levels.
-              levels = valueLib.levelAxesOf(result);
-            } else {
-              throw new Error('evaluateN: Value result has unexpected shape ['
-                + result.shape.join(',') + '] for count=' + count);
-            }
-          } else {
-            throw new Error('evaluateN: expression produced non-scalar per-atom '
-              + 'result (got ' + (typeof result) + '); only scalar exprs are '
-              + 'supported on this path');
+          // A record-valued body (with its leading `let`s evaluated once)
+          // replies one packed result per field.
+          const fields = samplerLib.evaluateFieldsN(msg.ir, refArrays, count, env);
+          if (fields) {
+            const packed: Record<string, any> = {};
+            for (const name of Object.keys(fields)) packed[name] = packN(fields[name], count);
+            return { type: 'samples', id, fields: packed, logWeights: null };
           }
-          // Deterministic transforms preserve their parents' weights.
-          // The main thread is responsible for plumbing the parent's
-          // logWeights through; the worker just emits null here and
-          // lets that wrap-up happen at the cache boundary.
-          // transferablesOf moves the result buffer out of this worker. A
-          // borrowed env result must own a copy before that move, or the next
-          // request observes detached fixed data. Fresh results stay zero-copy.
-          if (retainedBuffers.has(out.buffer)) out = out.slice();
-          const reply: any = { type: 'samples', id, samples: out, logWeights: null };
-          if (dims) reply.dims = dims;
-          if (levels && levels.length > 0) reply.levels = levels;
-          if (imag) reply.imag = imag;
-          return reply;
+          return { ...packN(samplerLib.evaluateExprN(msg.ir, refArrays, count, env), count), id };
         }
         case 'logDensityN': {
           // Batched density evaluation — thin shell around

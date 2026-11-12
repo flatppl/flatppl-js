@@ -191,11 +191,14 @@ function _refsStochastic(ir: any, ctx: any): boolean {
 
 // The refs an IR mentions, in either namespace. `%local` counts: an explicit
 // boundary is fed under both its own name and its `%local` param alias.
+// A `let` name (let-view.ts) is the let's value, not the binding it shares a
+// spelling with, and its value's names are listed where it is read.
 function _refNames(ir: any): string[] {
   const { walkIR } = require('./ir-walk.ts');
+  const view = require('./let-view.ts').letView(ir);
   const out: string[] = [];
-  walkIR(ir, (n: any) => {
-    if (n && n.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')) out.push(n.name);
+  walkIR(view.ir, (n: any) => {
+    if (n && n.kind === 'ref' && (n.ns === 'self' || n.ns === '%local') && !view.isBound(n)) out.push(n.name);
   });
   return out;
 }
@@ -252,9 +255,18 @@ function _reachesBlocked(irs: any[], blocked: Set<string>, ctx: any): string | n
 // fixed to a value, which enter as plain constants. Returns null when the
 // expression is not affine (a product of two nodes, a nonlinear op, a ref to a
 // stochastic name with no node).
+// A shared intermediate of a parameter is a `let` name (let-view.ts): the
+// parse reads it as its value.
 function _affine(ir: any, keyFor: (nm: string) => string | null,
-                 atoms: Map<string, number>, ctx: any, formal?: string): Affine | null {
+                 atoms: Map<string, number>, ctx: any, formal?: string, view?: any): Affine | null {
   if (!ir || typeof ir !== 'object') return null;
+  if (!view) {
+    view = require('./let-view.ts').letView(ir);
+    ir = view.ir;
+  }
+  if (view.isBound(ir) || (ir.kind === 'call' && ir.op === 'let')) {
+    return _affine(view.resolve(ir), keyFor, atoms, ctx, formal, view);
+  }
   if (ir.kind === 'lit') {
     return typeof ir.value === 'number' && Number.isFinite(ir.value)
       ? { c: ir.value, coefs: new Map() } : null;
@@ -280,17 +292,18 @@ function _affine(ir: any, keyFor: (nm: string) => string | null,
     /* c8 ignore stop */
   }
   if (ir.kind !== 'call' || !Array.isArray(ir.args)) return null;
-  if (ir.op === 'sum' && ir.args.length === 1 && ir.args[0].op === 'vector') {
-    return _affine({ kind: 'call', op: 'add', args: ir.args[0].args }, keyFor, atoms, ctx, formal);
+  const container = view.resolve(ir.args[0]);
+  if (ir.op === 'sum' && ir.args.length === 1 && container?.op === 'vector') {
+    return _affine({ kind: 'call', op: 'add', args: container.args }, keyFor, atoms, ctx, formal, view);
   }
-  if (ir.op === 'get' && ir.args.length === 2 && ir.args[0].op === 'vector') {
-    const index = _constant(ir.args[1], ctx);
+  if (ir.op === 'get' && ir.args.length === 2 && container?.op === 'vector') {
+    const index = _constant(view.close(ir.args[1]), ctx);
     return index != null && Number.isInteger(index)
-      ? _affine(ir.args[0].args[index - 1], keyFor, atoms, ctx, formal) : null;
+      ? _affine(container.args[index - 1], keyFor, atoms, ctx, formal, view) : null;
   }
   const parts: Affine[] = [];
   for (const a of ir.args) {
-    const p = _affine(a, keyFor, atoms, ctx, formal);
+    const p = _affine(a, keyFor, atoms, ctx, formal, view);
     if (!p) return null;
     parts.push(p);
   }

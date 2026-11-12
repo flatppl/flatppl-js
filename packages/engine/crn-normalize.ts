@@ -35,8 +35,9 @@ function lebesgueBoxSupport(refIR: any): any | null {
     unwrappedShift = true;
   }
   if (!ref || ref.kind !== 'call') return null;
-  const supp = (ref.kwargs && ref.kwargs.support)
-    || (Array.isArray(ref.args) ? ref.args[0] : null);
+  // A support with shared bounds is a `let` (let-view.ts).
+  const supp = require('./let-view.ts').letView((ref.kwargs && ref.kwargs.support)
+    || (Array.isArray(ref.args) ? ref.args[0] : null)).top();
   if (!supp) return null;
   if (ref.op === 'Lebesgue') return supp;
   if (ref.op !== 'Uniform') return null;

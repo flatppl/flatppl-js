@@ -18,6 +18,9 @@ function resolveSupport(
   reference: (ir: any) => any = () => null,
 ): Support | null {
   if (!ir) return null;
+  // A shared bound, as in `interval(m_lo, m_hi)` read by several sets, is
+  // a let name (let-view.ts). Its value is the set the inlined tree held.
+  if (ir.kind === 'call' && ir.op === 'let') ir = require('./let-view.ts').letView(ir).top();
   if (ir.kind === 'ref') {
     const resolved = reference(ir);
     if (resolved && resolved !== ir) return resolveSupport(resolved, number, reference);

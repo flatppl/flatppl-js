@@ -111,6 +111,8 @@ function _uniformInterval(mIR: any, bindings: any): number[] | null {
   if (supp && supp.kind === 'ref' && supp.ns === 'self' && bindings.has(supp.name)) {
     const sb = bindings.get(supp.name); if (sb && sb.ir) supp = sb.ir;
   }
+  // A support with shared bounds is a `let` (let-view.ts).
+  supp = require('./let-view.ts').letView(supp).top();
   if (!supp || supp.kind !== 'call' || supp.op !== 'interval') return null;
   const lo = shared.resolveConstant(supp.args[0], bindings, new Set());
   const hi = shared.resolveConstant(supp.args[1], bindings, new Set());
@@ -148,6 +150,10 @@ function _collectDrawAncestors(ir: any, bindings: any, draws: Set<string>, seen:
   if (Array.isArray(ir.args)) for (const a of ir.args) _collectDrawAncestors(a, bindings, draws, seen);
   if (ir.kwargs) for (const k in ir.kwargs) _collectDrawAncestors(ir.kwargs[k], bindings, draws, seen);
   if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectDrawAncestors(f && f.value, bindings, draws, seen);
+  if (ir.op === 'let') {
+    for (const a of ir.assigns || []) _collectDrawAncestors(a && a.value, bindings, draws, seen);
+    _collectDrawAncestors(ir.body, bindings, draws, seen);
+  }
 }
 
 // True if `ir` contains a `draw` op anywhere (a non-deterministic body).
@@ -157,6 +163,10 @@ function _containsDraw(ir: any): boolean {
   if (Array.isArray(ir.args)) for (const a of ir.args) if (_containsDraw(a)) return true;
   if (ir.kwargs) for (const k in ir.kwargs) if (_containsDraw(ir.kwargs[k])) return true;
   if (Array.isArray(ir.fields)) for (const f of ir.fields) if (_containsDraw(f && f.value)) return true;
+  if (ir.op === 'let') {
+    for (const a of ir.assigns || []) if (_containsDraw(a && a.value)) return true;
+    if (_containsDraw(ir.body)) return true;
+  }
   return false;
 }
 

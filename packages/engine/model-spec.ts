@@ -360,7 +360,7 @@ function lebesgueSupportInfo(measureIR: any, ctx?: any): any {
   const fixed = (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues);
   // Unknown interval bounds use real coordinates, preserving the shape of
   // surrounding products. The density still enforces the original bounds.
-  const geometry = require('./ir-walk.ts').mapIR(support.supportArg(measureIR), (n: any) =>
+  const geometry = require('./ir-walk.ts').mapIR(require('./let-view.ts').topOf(support.supportArg(measureIR)), (n: any) =>
     n.op === 'interval' && n.args?.some((bound: any) => fixed(bound) == null)
       ? { kind: 'const', name: 'reals' } : n);
   const resolved = support.resolveSupport(geometry, fixed,
@@ -584,7 +584,7 @@ function priorLatentSources(d: any, ctx: any): PriorLatentSource[] {
         measureName: name,
         measureIR: require('./ir-walk.ts').mapIRScoped(
           require('./materialiser-shared.ts').inlineBoundaryDerivations(
-            orchestrator.expandMeasure(name, ctx), boundary, ctx),
+            orchestrator.expandMeasure(name, ctx), boundary, ctx, { valueLets: true }),
           (n: any, shadowed: Set<string>) =>
             n?.kind === 'ref' && n.ns === 'self' && !shadowed.has(n.name) && names.has(n.name)
               ? { ...n, name: names.get(n.name) } : n),

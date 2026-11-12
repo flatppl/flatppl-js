@@ -226,17 +226,21 @@ function polynomialBinLogMass(ir: any, bounds: any[], env: any): number | null {
     node = node.args[0];
   }
   if (node?.op !== 'weighted') return null;
-  const fn = node.args[0], body = fn?.body;
-  if (fn?.op !== 'functionof' || fn.params?.length !== 1
-      || body?.op !== 'polynomial' || body.args?.length !== 2) return null;
-  const coordinate = body.args[1], coefficients = body.args[0];
+  const fn = node.args[0];
+  if (fn?.op !== 'functionof' || fn.params?.length !== 1 || !fn.body) return null;
+  // A shared coefficient is a `let` name (let-view.ts).
+  const view = require('./let-view.ts').letView(fn.body);
+  const body = view.resolve(view.ir);
+  if (body?.op !== 'polynomial' || body.args?.length !== 2) return null;
+  const coordinate = view.resolve(body.args[1]), coefficients = view.resolve(body.args[0]);
   if (coordinate?.kind !== 'ref' || coordinate.name !== fn.params[0]
       || coefficients?.op !== 'vector' || !coefficients.args?.length) return null;
-  let dependent = false;
-  for (const coefficient of coefficients.args) walkIR(coefficient, (n: any) => {
-    if (n.kind === 'ref' && n.ns === coordinate.ns && n.name === coordinate.name) dependent = true;
+  const readsCoordinate = view.mentions((n: any) => {
+    let found = false;
+    walkIR(n, (m: any) => { if (m.kind === 'ref' && m.ns === coordinate.ns && m.name === coordinate.name) found = true; });
+    return found;
   });
-  if (dependent) return null;
+  if (coefficients.args.some(readsCoordinate)) return null;
 
   // Bounded Lebesgue lowers to volume * Uniform. Keep those scalar factors
   // and Uniform's reciprocal volume, rather than treating either as density1.
@@ -269,7 +273,7 @@ function polynomialBinLogMass(ir: any, bounds: any[], env: any): number | null {
   }
   const lo = Math.max(lower, bin.lo), hi = Math.min(upper, bin.hi);
   if (lo >= hi || logScale === -Infinity) return -Infinity;
-  const values = coefficients.args.map((c: any) => +sampler.evaluateExpr(c, env));
+  const values = coefficients.args.map((c: any) => +sampler.evaluateExpr(view.close(c), env));
   if (!values.every(Number.isFinite)) {
     throw new Error('BinnedPoissonProcess: polynomial coefficients must be finite real values');
   }

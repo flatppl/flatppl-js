@@ -38,6 +38,7 @@ const { recordDerivedFailure, derivedFailureOf, derivedFieldFailure } = require(
 // ---------------------------------------------------------------------------
 function makeParseSet(env: Record<string, any>) {
   return (setIR: any) => {
+    setIR = require('./let-view.ts').topOf(setIR);
     const d = irShared.parseSetIR(setIR, null);
     if (d) return d;
     if (setIR && setIR.kind === 'call' && setIR.op === 'interval'

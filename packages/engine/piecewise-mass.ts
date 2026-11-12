@@ -145,15 +145,24 @@ function leafMassExpr(param: string, body: any, kernel: string, input: Record<st
 // so each of these expressions is constant between the resulting cuts).
 function variesBetweenCuts(body: any, param: string, arrayVariate: boolean): string | null {
   let found: any = null;
+  // A `let` name (let-view.ts) is followed into its value where it is read
+  // outside a test, so a name read only inside tests does not count.
+  const view = require('./let-view.ts').letView(body);
+  const followed = new Set<string>();
   const visit = (n: any, near: any) => {
     if (found || !n || typeof n !== 'object') return;
     if (Array.isArray(n)) { n.forEach((c) => visit(c, near)); return; }
     const here = n.loc ? n : near;
     if (n.kind === 'call' && ['in', 'lt', 'le', 'gt', 'ge', 'floor', 'ceil', 'round'].includes(n.op)) return;
+    if (view.isBound(n)) {
+      if (!followed.has(n.name)) { followed.add(n.name); visit(view.bound.get(n.name).value, here); }
+      return;
+    }
+    if (n.kind === 'call' && n.op === 'let') { visit(n.body, here); return; }
     if (isVariate(n, param, arrayVariate) || (n.kind === 'ref' && n.name === param)) { found = here || {}; return; }
     for (const k in n) if (k !== 'loc' && k !== 'meta') visit(n[k], here);
   };
-  visit(body, null);
+  visit(view.ir, null);
   if (!found) return null;
   const s = found.loc && found.loc.start;
   return s ? ' at line ' + (s.line + 1) + ', column ' + (s.col + 1) : '';

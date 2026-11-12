@@ -66,6 +66,7 @@ import type {
   DerivationTruncate,
   DerivationTuple,
   DerivationWeighted,
+  IRLet,
   IRNode,
 } from './engine-types';
 
@@ -623,7 +624,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
         }
         continue;
       }
-      const newBody = inlineBoundaryDerivations(ir.body, boundary, inlineCtx);
+      const newBody = inlineBoundaryDerivations(ir.body, boundary, inlineCtx, { valueLets: true });
       if (newBody !== ir.body) {
         binding.ir = Object.assign({}, ir, { body: newBody });
         selfContained.add(fnName);
@@ -1402,10 +1403,34 @@ function _unwrapHoistedFormalRoot(
 function _inlineFormalCarryingRefs(
   ir: any, bindings: any, mentionsFormal: (name: string) => boolean,
 ): any {
+  // As materialiser-shared.inlineBoundaryDerivations: a binding read more
+  // than once is let-bound, but only around a value, never a measure root.
+  const shared = require('./materialiser-shared.ts');
+  const graph = _inlineFormalCarryingRefsAs(ir, bindings, mentionsFormal, true);
+  if (graph && graph.op === 'let' && !shared.isPureValueIR(graph.body)) {
+    return _inlineFormalCarryingRefsAs(ir, bindings, mentionsFormal, false);
+  }
+  return graph;
+}
+
+function _inlineFormalCarryingRefsAs(
+  ir: any, bindings: any, mentionsFormal: (name: string) => boolean, useLets: boolean,
+): any {
   const memo = new Map<string, any>();
   const active = new Set<string>();
+  // A value binding read more than once is bound once in a `let` around the
+  // result and its refs stay refs; one read once is inlined as before (see
+  // materialiser-shared.inlineBoundaryDerivations, letForm). A measure
+  // constructor still inlines: density walkers read its structure.
+  const assigns: Array<{ name: string; value: any }> = [];
+  const reads = new Map<string, number>();
+  let counting = false;
+
+  // Names bound by a `let` already in the input stay refs inside its scope.
+  const letScope = new Set<string>();
 
   function inlinedBinding(name: string): any | null {
+    if (letScope.has(name)) return null;
     if (memo.has(name)) return memo.get(name);
     if (active.has(name)) return null;              // cycle guard
     const target = bindings && bindings.get(name);
@@ -1415,11 +1440,28 @@ function _inlineFormalCarryingRefs(
         && !DISTRIBUTIONS.has(target.ir.op) && !MEASURE_OPS.has(target.ir.op)) return null;
     if (target.ir.op === 'elementof' || target.ir.op === 'external') return null;
     if (!mentionsFormal(name)) return null;
+    if (counting && !isMeasureBinding(target)) {
+      const n = (reads.get(name) || 0) + 1;
+      reads.set(name, n);
+      if (n === 1) {
+        active.add(name);
+        walk(target.ir);
+        active.delete(name);
+      }
+      return null;
+    }
     active.add(name);
     const inlined = walk(target.ir);
     active.delete(name);
-    memo.set(name, inlined);
-    return inlined;
+    if (isMeasureBinding(target) || (reads.get(name) || 0) < 2
+        || require('./materialiser-shared.ts').isLeafIR(inlined)) {
+      memo.set(name, inlined);
+      return inlined;
+    }
+    const ref = { kind: 'ref', ns: 'self', name };
+    assigns.push({ name, value: inlined });
+    memo.set(name, ref);
+    return ref;
   }
 
   function walk(n: any): any {
@@ -1433,6 +1475,19 @@ function _inlineFormalCarryingRefs(
       const inlined = inlinedBinding(n.name);
       return inlined == null ? n : inlined;
     }
+    if (n.kind === 'call' && n.op === 'let') {
+      const added: string[] = [];
+      let letChanged = false;
+      const inner = (n.assigns || []).map((a: any) => {
+        const value = walk(a.value);
+        if (!letScope.has(a.name)) { letScope.add(a.name); added.push(a.name); }
+        if (value !== a.value) letChanged = true;
+        return value === a.value ? a : { ...a, value };
+      });
+      const body = walk(n.body);
+      for (const name of added) letScope.delete(name);
+      return letChanged || body !== n.body ? { ...n, assigns: inner, body } : n;
+    }
     let changed = false;
     const out: any = {};
     for (const k in n) {
@@ -1443,7 +1498,15 @@ function _inlineFormalCarryingRefs(
     return changed ? out : n;
   }
 
-  return walk(ir);
+  if (useLets) {
+    counting = true;
+    walk(ir);
+    counting = false;
+  }
+  const root = walk(ir);
+  if (!assigns.length) return root;
+  const graph: IRLet = { kind: 'call', op: 'let', assigns, body: root, loc: ir && ir.loc };
+  return graph;
 }
 
 // =====================================================================
@@ -1542,25 +1605,19 @@ function _classifyWeightedByFunction(
   // parameters"). A one-input f receives x whole. A several-input f receives
   // a record variate by auto-splatting (§04 "Calling conventions"): each
   // input reads the field of its own name, which typeinfer has checked.
-  const variate = (loc: any) => ({ kind: 'ref', ns: 'self', name: baseName, loc });
+  // Each formal reads the variate (one input) or its field of the same name
+  // (several inputs), substituted in place so the weight keeps the shape the
+  // normaliser and integral recognisers read. The substitution is scoped: a
+  // `let` that rebinds a formal's name hides it below.
+  const variate = { kind: 'ref', ns: 'self', name: baseName, loc: weightExpr.loc };
   const surface: string[] = fnIR.paramKwargs || fnIR.params;
-  const valueOf = new Map<string, (loc: any) => any>(fnIR.params.length === 1
-    ? [[fnIR.params[0], variate]]
-    : fnIR.params.map((p: string, i: number) => [p, (loc: any) => ({ kind: 'call', op: 'get_field',
-      args: [variate(loc), { kind: 'lit', value: surface[i] }], loc })]));
-  // mapIR's identity-preserving rebuild means any sub-tree that doesn't
-  // mention a parameter shares references with the original — the binding's
-  // body keeps its IR intact for other consumers (signatures, dag).
-  const { mapIR } = require('./ir-walk.ts');
-  // The formal's ref is `%local` (placeholder form) or a `self` ref of
-  // the param's name (identifier-bound boundary, spec-shaped bodies §11).
-  const synth = mapIR(body, (n: any) => {
-    if (n && n.kind === 'ref' && valueOf.has(n.name)
-        && (n.ns === '%local' || n.ns === 'self')) {
-      return valueOf.get(n.name)!(n.loc);
-    }
-    return n;
-  });
+  const valueOf = new Map<string, any>(fnIR.params.map((p: string, i: number) => [p,
+    fnIR.params.length === 1 ? variate
+      : { kind: 'call', op: 'get_field', args: [variate, { kind: 'lit', value: surface[i] }] }]));
+  const { mapIRScoped } = require('./ir-walk.ts');
+  const synth = mapIRScoped(body, (n: any, shadowed: Set<string>) =>
+    (n && n.kind === 'ref' && (n.ns === '%local' || n.ns === 'self')
+      && valueOf.has(n.name) && !shadowed.has(n.name)) ? valueOf.get(n.name) : n);
   return {
     kind: 'weighted', from: baseName, weightIR: synth,
     isLog: !!isLog, isVariateWeight: true,
@@ -1569,8 +1626,34 @@ function _classifyWeightedByFunction(
 
 // Beta-reduce calls of user functions in a weight body. The worker has no
 // function bindings, so `row_max(X)[.t]` inside an aggregate, or a helper
-// called on aggregate cells, must reach it as the function's body.
-function _inlineUserCalls(ir: any, bindings: any, active = new Set<string>()): any {
+// called on aggregate cells, must reach it as the function's body. A call
+// becomes a `let` of its arguments, each evaluated once, when the body reads a
+// parameter more than once or binds names of its own (a substituted argument
+// there could read the callee's binding of a caller name). Otherwise each
+// argument is substituted into the body, as before.
+function _inlineUserCalls(ir: any, bindings: any): any {
+  return _inlineUserCallsAs(ir, bindings, new Set<string>());
+}
+
+// Does a call of `body` need a `let`: a parameter read more than once, or a
+// `let` in the body that a substituted argument could be read under?
+function _needsCallLet(body: any, params: Map<string, any>): boolean {
+  const reads = new Map<string, number>();
+  let hasLet = false;
+  (function go(n: any) {
+    if (hasLet || !n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(go); return; }
+    if (n.kind === 'call' && n.op === 'let') { hasLet = true; return; }
+    if (n.kind === 'ref' && (n.ns === '%local' || n.ns === 'self') && params.has(n.name)) {
+      reads.set(n.name, (reads.get(n.name) || 0) + 1);
+      return;
+    }
+    for (const k in n) if (k !== 'loc' && k !== 'meta') go(n[k]);
+  })(body);
+  return hasLet || [...reads.values()].some((c) => c > 1);
+}
+
+function _inlineUserCallsAs(ir: any, bindings: any, active: Set<string>): any {
   const { mapIR } = require('./ir-walk.ts');
   return mapIR(ir, (n: any) => {
     if (n?.kind !== 'call' || n.op || n.target?.ns !== 'self' || active.has(n.target.name)) return n;
@@ -1590,12 +1673,39 @@ function _inlineUserCalls(ir: any, bindings: any, active = new Set<string>()): a
       argFor.set(params[i], arg);
     }
     active.add(n.target.name);
-    const body = _inlineUserCalls(fnIR.body, bindings, active);
+    const body = _inlineUserCallsAs(fnIR.body, bindings, active);
     active.delete(n.target.name);
-    return mapIR(body, (m: any) => (m?.kind === 'ref' && (m.ns === '%local' || m.ns === 'self')
-      && argFor.has(m.name) ? argFor.get(m.name) : m));
+    if (!_needsCallLet(body, argFor)) {
+      return mapIR(body, (m: any) => (m?.kind === 'ref' && (m.ns === '%local' || m.ns === 'self')
+        && argFor.has(m.name) ? argFor.get(m.name) : m));
+    }
+    // Each argument is bound once, in the caller's scope, under a fresh name
+    // that the body reads in place of the parameter. No parameter name is
+    // rebound, so `f(y, x)` for `f(x, y)` reads the caller's values, and a
+    // parameter named like the caller's variate does not shadow it.
+    // A literal argument is copied in place, as it costs nothing to evaluate
+    // and reads no caller name.
+    const call = _userCallCount++;
+    const temps: Array<{ name: string; value: any }> = [];
+    const tempFor = new Map<string, any>();
+    params.forEach((p: string, i: number) => {
+      const arg = argFor.get(p);
+      if (arg?.kind === 'lit' || arg?.kind === 'const'
+          || (arg?.kind === 'call' && arg.op === 'neg' && arg.args?.[0]?.kind === 'lit')) {
+        tempFor.set(p, arg);
+        return;
+      }
+      temps.push({ name: '%arg:' + call + ':' + i, value: arg });
+      tempFor.set(p, { kind: 'ref' as const, ns: '%local', name: '%arg:' + call + ':' + i });
+    });
+    const reads = mapIR(body, (m: any) => (m?.kind === 'ref' && (m.ns === '%local' || m.ns === 'self')
+      && tempFor.has(m.name) ? tempFor.get(m.name) : m));
+    if (temps.length === 0) return reads;
+    const graph: IRLet = { kind: 'call', op: 'let', assigns: temps, body: reads, loc: n.loc };
+    return graph;
   });
 }
+let _userCallCount = 0;
 
 function classifyLogWeighted(
   rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
@@ -4110,6 +4220,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     if (ir.args)    for (const a of ir.args)            _collectCallableHeadRefs(a, seen, visited);
     if (ir.kwargs)  for (const k in ir.kwargs)          _collectCallableHeadRefs(ir.kwargs[k], seen, visited);
     if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectCallableHeadRefs(f && f.value, seen, visited);
+    if (Array.isArray(ir.assigns)) for (const a of ir.assigns) _collectCallableHeadRefs(a && a.value, seen, visited);
     if (ir.body)                                        _collectCallableHeadRefs(ir.body, seen, visited);
     return seen;
   }
@@ -5564,7 +5675,9 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           const baseRefs = collectSelfRefs(d.weightIR);
           let weightIRForWalk = d.weightIR;
           if (baseRefs.has(d.from)) {
-            const paramName = '_x_';
+            // An internal name: the weight's own `let` binds the callback's
+            // inputs, and a user placeholder such as `_x_` would shadow it.
+            const paramName = '%variate';
             const { mapIR } = require('./ir-walk.ts');
             const rewrapped = mapIR(d.weightIR, (n: any) =>
               (n && n.kind === 'ref' && n.ns === 'self' && n.name === d.from)
@@ -6487,6 +6600,7 @@ module.exports = {
   classifyIid,
   iidDims,
   LEAF_DISTRIBUTION_KINDS,
+  inlineUserCalls: _inlineUserCalls,
   _isRecordValuedMeasureBase,
   classifyKernelBroadcast,
   classifyLogdensityof,
