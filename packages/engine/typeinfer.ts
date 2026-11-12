@@ -1859,6 +1859,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         message: op + ': expected a callable, got ' + T.show(fnT) });
       return T.failed(op + ' callback');
     }
+    // §04 "Calling conventions": `f(x)` with a lone record, table or tuple `x`
+    // auto-splats when `f` does not accept one positional input. The ordinary
+    // call check applies that rule and its static errors.
+    const sole = inputs.length === 1 ? inputs[0] : null;
+    if (sole && ['record', 'table', 'tuple'].includes(sole.kind) && fnT.inputs?.length
+        && !T.acceptsPositional(fnT, 1)) {
+      // An inline callable is checked under a local name that diagnostics show.
+      const callee = op + ' callback';
+      const call = fn?.kind === 'ref' ? { kind: 'call', target: fn, args, loc }
+        : { kind: 'call', target: { kind: 'ref', ns: '%local', name: callee, loc }, args, loc };
+      const callScope = fn?.kind === 'ref' ? scope : new Map([...scope, [callee, fnT]]);
+      return inferUserCall(call, scopes.concat([callScope]));
+    }
     if (fnT.inputs?.length && fnT.inputs.length !== inputs.length) {
       diagnostics.push({ severity: 'error', loc,
         message: op + ': callback receives ' + inputs.length + ' whole inputs, but declares '
@@ -4803,18 +4816,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const args = expr.args || [];
     if (args.length < 2) return arityError('pushfwd', 'at least 2', args.length, expr.loc);
     const hasExtras = args.length > 2 || Object.keys(expr.kwargs || {}).length > 0;
-    // arg 0 is the function. Its result type is read by the codomain query
-    // below; only its arity is checked here, since §04 "Explicit callback
-    // parameters" fixes the application as `f(x)` for the whole variate.
+    // arg 0 is the function, applied as `f(x)` to the variate (§04 "Explicit
+    // callback parameters"). A callable of several inputs takes a record,
+    // table or tuple variate by auto-splatting and refuses any other variate,
+    // so its check waits for the base measure's domain.
     const fT: any = inferExpr(args[0], scopes);
-    if (!hasExtras && T.isCallable(fT) && fT.inputs?.length > 1) {
-      diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'pushfwd: callback receives 1 whole inputs, but declares '
-          + fT.inputs.length });
-      return T.failed('pushfwd callback inputs');
-    }
     const m2 = inferExpr(args[1], scopes);
     const codomain = (domain: any) => {
+      if (!hasExtras && T.isCallable(fT) && fT.inputs?.length > 1) {
+        const cod = inferCallback(args[0], [domain], scopes, 'pushfwd', expr.loc);
+        return cod?.kind === 'failed' || T.isValue(cod) ? cod : null;
+      }
       if (!hasExtras) return _pushfwdCodomain(args[0], domain, scopes);
       const extras = args.slice(2), keywords = expr.kwargs || {};
       const inputs = additionalInputs(args[0], [domain], extras, keywords, scopes, 'pushfwd', expr.loc);

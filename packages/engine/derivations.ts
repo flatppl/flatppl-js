@@ -1532,25 +1532,32 @@ function _classifyWeightedByFunction(
   } else {
     return null;
   }
-  if (!Array.isArray(fnIR.params) || fnIR.params.length !== 1 || !fnIR.body) return null;
-  const paramName = fnIR.params[0];
+  if (!Array.isArray(fnIR.params) || fnIR.params.length === 0 || !fnIR.body) return null;
   // Inline lambdas do not pass through the named-function self-containment
   // pass. Expose formals behind derived reification clones before replacing
   // them, or those clones keep references to the lambda's unbound parameter.
   const body = _inlineUserCalls(_inlineFormalCarryingRefs(fnIR.body, bindings,
     _makeMentionsFormal(new Set(fnIR.params), bindings)), bindings);
-  // Replace every `(ref %local <paramName>)` in the body with
-  // `(ref self <baseName>)`. mapIR's identity-preserving rebuild
-  // means any sub-tree that doesn't mention the parameter shares
-  // references with the original — the binding's body keeps its
-  // IR intact for other consumers (signatures, dag).
+  // The weight is `f(x)` for the variate x (§04 "Explicit callback
+  // parameters"). A one-input f receives x whole. A several-input f receives
+  // a record variate by auto-splatting (§04 "Calling conventions"): each
+  // input reads the field of its own name, which typeinfer has checked.
+  const variate = (loc: any) => ({ kind: 'ref', ns: 'self', name: baseName, loc });
+  const surface: string[] = fnIR.paramKwargs || fnIR.params;
+  const valueOf = new Map<string, (loc: any) => any>(fnIR.params.length === 1
+    ? [[fnIR.params[0], variate]]
+    : fnIR.params.map((p: string, i: number) => [p, (loc: any) => ({ kind: 'call', op: 'get_field',
+      args: [variate(loc), { kind: 'lit', value: surface[i] }], loc })]));
+  // mapIR's identity-preserving rebuild means any sub-tree that doesn't
+  // mention a parameter shares references with the original — the binding's
+  // body keeps its IR intact for other consumers (signatures, dag).
   const { mapIR } = require('./ir-walk.ts');
   // The formal's ref is `%local` (placeholder form) or a `self` ref of
   // the param's name (identifier-bound boundary, spec-shaped bodies §11).
   const synth = mapIR(body, (n: any) => {
-    if (n && n.kind === 'ref' && n.name === paramName
+    if (n && n.kind === 'ref' && valueOf.has(n.name)
         && (n.ns === '%local' || n.ns === 'self')) {
-      return { kind: 'ref', ns: 'self', name: baseName, loc: n.loc };
+      return valueOf.get(n.name)!(n.loc);
     }
     return n;
   });
