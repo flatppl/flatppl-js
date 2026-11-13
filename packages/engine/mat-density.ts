@@ -288,7 +288,7 @@ function deriveRegionOpts(o: any): { useRegion: boolean; region: any } {
 // Bayesupdate — reweight prior atoms by per-atom log-likelihood
 // =====================================================================
 
-function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
+function matBayesupdate(d: DerivationBayesupdate, ctx: any): Promise<any> {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
@@ -303,6 +303,8 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         + 'joint_likelihood of more than one term; use the default IS backend',
       ));
     }
+    const adapted = require('./relabel-prior.ts').adaptRelabelledPrior(d, ctx);
+    if (adapted) return matBayesupdate(adapted.derivation, adapted.ctx).then(adapted.restore);
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
