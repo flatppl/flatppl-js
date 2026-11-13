@@ -31,6 +31,7 @@ const PARAM_SETS: Record<string, Record<string, DomainSet>> = {
   Exponential: { rate: 'posreals' },
   Gamma: { shape: 'posreals', rate: 'posreals' },
   Weibull: { shape: 'posreals', scale: 'posreals' },
+  Rayleigh: { scale: 'posreals' },
   Pareto: { shape: 'posreals', scale: 'posreals' },
   InverseGamma: { shape: 'posreals', scale: 'posreals' },
   Beta: { alpha: 'posreals', beta: 'posreals' },

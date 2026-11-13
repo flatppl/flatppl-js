@@ -11,6 +11,8 @@ const CASES: [string, any, number[], number[]][] = [
   ['Cauchy',      { location: 0, scale: 5 },  [-5, 0, 5],            [0.25, 0.5, 0.75]],
   ['Beta',        { alpha: 2, beta: 2 }, [0.1, 0.5, 0.9],       [0.028000, 0.5, 0.972000]],
   ['Gamma',       { shape: 2, rate: 1 }, [0.5, 1.678347, 4.0],  [0.090204, 0.5, 0.908422]],
+  // Distributions.jl cdf(Rayleigh(2), x) — full precision.
+  ['Rayleigh',    { scale: 2 },          [0.5, 1.5, 4.0],       [0.03076676552365592, 0.24516039801099265, 0.8646647167633873]],
   // scipy.stats.invgamma(a=5, scale=5).cdf(x) at x = that dist's own ppf([0.01,0.1,0.5,0.9,0.99])
   // (independently computed via scipy — see inverse-cdf.test.ts for the matching ppf values).
   ['InverseGamma', { shape: 5, scale: 5 },

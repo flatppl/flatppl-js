@@ -42,6 +42,7 @@ const QUANTILE: Record<string, (p: number, q: any) => number> = {
   HalfCauchy:  (p, q) => q.scale * Math.tan(0.5 * Math.PI * p),
   Logistic:    (p, q) => q.mu + q.s * Math.log(p / (1 - p)),
   Weibull:     (p, q) => q.scale * Math.pow(-Math.log1p(-p), 1 / q.shape),
+  Rayleigh:    (p, q) => q.scale * Math.sqrt(-2 * Math.log1p(-p)),
   Pareto:      (p, q) => q.scale / Math.pow(1 - p, 1 / q.shape),   // scale = x_m, shape = α
   Laplace:     (p, q) => p < 0.5 ? q.location + q.scale * Math.log(2 * p)
     : q.location - q.scale * Math.log(2 * (1 - p)),

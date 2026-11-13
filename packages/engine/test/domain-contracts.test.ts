@@ -40,6 +40,7 @@ test('domain-contract: negative shape/rate/concentration flagged', () => {
   assert.ok(violates('x = draw(Gamma(shape = 1.0, rate = -2.0))'));
   assert.ok(violates('x = draw(InverseGamma(shape = -1.0, scale = 2.0))'));
   assert.ok(violates('x = draw(Weibull(shape = -1.0, scale = 2.0))'));
+  assert.ok(violates('x = draw(Rayleigh(scale = -1.0))'));
   assert.ok(violates('x = draw(StudentT(nu = -3.0))'));
 });
 
