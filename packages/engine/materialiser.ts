@@ -1277,6 +1277,33 @@ function _emptyRecordIid(name: string, ctx: any) {
   return { shape: 'table', ...table, value: table, logTotalmass: 0, n_eff: 1 };
 }
 
+// iid over a record law held in importance weights (matIid): the SIR pool
+// grows until its effective sample size is this many times the row count,
+// and stops at this many candidate rows.
+const IID_SIR_ESS_PER_ROW = 10;
+const IID_SIR_MAX_ROWS = 1 << 20;
+// Is `name` a measure over records? (Its inferred domain.)
+function _isRecordLaw(name: string, ctx: any): boolean {
+  const t = ctx && ctx.bindings && ctx.bindings.get ? ctx.bindings.get(name)?.inferredType : null;
+  return !!(t && t.kind === 'measure' && t.domain && t.domain.kind === 'record');
+}
+
+// Is `name` an iid over a record law, whose one draw is a k-row table (a
+// dataset)? A viewer materialises it at one atom, the only count it has.
+function isRecordIidDataset(name: string, ctx: any): boolean {
+  let n = name;
+  const seen = new Set<string>();
+  while (ctx.derivations && ctx.derivations[n] && ctx.derivations[n].kind === 'alias' && !seen.has(n)) {
+    seen.add(n);
+    n = ctx.derivations[n].from;
+  }
+  const d = ctx.derivations && ctx.derivations[n];
+  return !!(d && d.kind === 'iid' && _isRecordLaw(d.from, ctx));
+}
+
+const IID_RECORD_ENSEMBLE = 'iid: sampling iid over a record measure at >1 atoms (an ensemble '
+  + 'of tables) is not supported; sample a single dataset (1 atom)';
+
 function matIid(name: string, d: DerivationIid, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. Worker's sampleN takes an optional repeat=k.
@@ -1359,7 +1386,10 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     }
     const k = d.dims.reduce((p: any, n: any) => p * n, 1);
     const N = ctx.sampleCount;
-    const inflatedCache = new Map();
+    // iid over a record law is one k-row table: an ensemble of N tables has
+    // no single value (see the record arm below). Refuse it before drawing
+    // the N·k rows a viewer-sized N would otherwise materialise first.
+    if (N !== 1 && _isRecordLaw(d.from, ctx)) return Promise.reject(new Error(IID_RECORD_ENSEMBLE));
     // Weight streams a tiled value draw brings in — ONE weighting event per
     // atom, shared by its k inner draws, so they are held OFF the inflated
     // per-position axis and folded into the atom weight once
@@ -1367,60 +1397,68 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // the final fold also de-duplicates events shared by distinct arrays.
     const sharedAtomLW: Float64Array[] = [];
     const sharedSeen = new Set<Float64Array>();
-    const inflatedCtx: any = Object.assign({}, ctx, {
-      sampleCount: N * k,
-      // Repeat axis: the inflated batch is N blocks of k contiguous
-      // inner draws ([N, k] row-major). Resampling handlers (matSuperpose)
-      // read this to resample WITHIN each k-block, so atom b's k inner
-      // draws stay conditioned on atom b's params (within-atom conditional
-      // independence, spec §06) instead of mixing across atoms.
-      repeatBlock: k,
-      // Domain-separated child rootKey: the ':iid_fallback' tag keeps
-      // this child's seed stream distinct from any sample-step seed
-      // derived at this same `name` higher up the call stack (e.g.
-      // matSample at line 92 / line 497 / line 1349). xxhash32-derived
-      // tags + foldIn give us the full 96 bits of separation between
-      // (parent rootKey + name vs. parent rootKey + name+':iid_fallback').
-      rootKey: nameSeed(name + ':iid_fallback', ctx.rootKey),
-    });
-    inflatedCtx.getMeasure = function(nn: string) {
-      if (inflatedCache.has(nn)) return inflatedCache.get(nn);
-      // Repeat-axis split (see the block comment above). A binding is
-      // an atom-level VALUE draw iff its inferred type is non-measure AND
-      // it is not a reified law's variate; those are held constant across
-      // the k inner draws by tiling the parent's N-atom draw ×k. Everything
-      // else — M itself, its sub-measures, and the variates of the reified
-      // laws inside it — redraws freshly at the inflated N×k count.
-      const bdef = (ctx.bindings && ctx.bindings.get)
-        ? ctx.bindings.get(nn) : null;
-      const bt = bdef && bdef.inferredType;
-      const isValueDraw = !!(bt && bt.kind && bt.kind !== 'measure')
-        && !reifiedVariates.has(nn);
-      let p: any;
-      if (isValueDraw) {
-        p = Promise.resolve(ctx.getMeasure(nn)).then((m: any) => {
-          const tiled = tileMeasureAtomMajor(m, N, k);
-          // The draw is held constant across the block, so its weight is the
-          // atom's, not the position's: record it for the once-only fold and
-          // keep it off the inflated axis, where the k-block product would
-          // raise it to the power k. At k = 1 there is no block and no tiling —
-          // the weights stay on the (N·1) axis, where the fold already counts
-          // each exactly once.
-          if (tiled !== m && m && m.logWeights) {
-            if (!sharedSeen.has(m.logWeights)) {
-              sharedSeen.add(m.logWeights);
-              sharedAtomLW.push(m.logWeights);
+    // An inflated context drawing `count` inner positions: one block of k per
+    // atom for the product measure, or K·k candidate rows for the SIR pool of
+    // a record law held in importance weights (below).
+    const inflate = (count: number, tag: string) => {
+      const inflatedCache = new Map();
+      const inflatedCtx: any = Object.assign({}, ctx, {
+        sampleCount: count,
+        // Repeat axis: the inflated batch is N blocks of k contiguous
+        // inner draws ([N, k] row-major). Resampling handlers (matSuperpose)
+        // read this to resample WITHIN each k-block, so atom b's k inner
+        // draws stay conditioned on atom b's params (within-atom conditional
+        // independence, spec §06) instead of mixing across atoms.
+        repeatBlock: count / N,
+        // Domain-separated child rootKey: the ':iid_fallback' tag keeps
+        // this child's seed stream distinct from any sample-step seed
+        // derived at this same `name` higher up the call stack (e.g.
+        // matSample at line 92 / line 497 / line 1349). xxhash32-derived
+        // tags + foldIn give us the full 96 bits of separation between
+        // (parent rootKey + name vs. parent rootKey + name+':iid_fallback').
+        rootKey: nameSeed(name + tag, ctx.rootKey),
+      });
+      inflatedCtx.getMeasure = function(nn: string) {
+        if (inflatedCache.has(nn)) return inflatedCache.get(nn);
+        // Repeat-axis split (see the block comment above). A binding is
+        // an atom-level VALUE draw iff its inferred type is non-measure AND
+        // it is not a reified law's variate; those are held constant across
+        // the k inner draws by tiling the parent's N-atom draw ×k. Everything
+        // else — M itself, its sub-measures, and the variates of the reified
+        // laws inside it — redraws freshly at the inflated N×k count.
+        const bdef = (ctx.bindings && ctx.bindings.get)
+          ? ctx.bindings.get(nn) : null;
+        const bt = bdef && bdef.inferredType;
+        const isValueDraw = !!(bt && bt.kind && bt.kind !== 'measure')
+          && !reifiedVariates.has(nn);
+        let p: any;
+        if (isValueDraw) {
+          p = Promise.resolve(ctx.getMeasure(nn)).then((m: any) => {
+            const tiled = tileMeasureAtomMajor(m, N, k);
+            // The draw is held constant across the block, so its weight is the
+            // atom's, not the position's: record it for the once-only fold and
+            // keep it off the inflated axis, where the k-block product would
+            // raise it to the power k. At k = 1 there is no block and no tiling —
+            // the weights stay on the (N·1) axis, where the fold already counts
+            // each exactly once.
+            if (tiled !== m && m && m.logWeights) {
+              if (!sharedSeen.has(m.logWeights)) {
+                sharedSeen.add(m.logWeights);
+                sharedAtomLW.push(m.logWeights);
+              }
+              tiled.logWeights = null;
             }
-            tiled.logWeights = null;
-          }
-          return tiled;
-        });
-      } else {
-        p = materialiseMeasure(nn, inflatedCtx);
-      }
-      inflatedCache.set(nn, p);
-      return p;
+            return tiled;
+          });
+        } else {
+          p = materialiseMeasure(nn, inflatedCtx);
+        }
+        inflatedCache.set(nn, p);
+        return p;
+      };
+      return inflatedCtx;
     };
+    const inflatedCtx = inflate(N * k, ':iid_fallback');
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
       // §06 makes an iid product measure's mass Z^k. When the algebra cannot
       // certify Z, this measure's mass is UNKNOWN, and recording 0 would claim
@@ -1448,22 +1486,6 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
             'iid: multi-axis iid over a record measure is out of scope (G1); '
             + 'a table has one row axis (spec §03)'));
         }
-        if (foldedLW) {
-          // The table branch below emits ONE dataset (N is forced to 1 just
-          // under this), and a single atom's importance weight renormalises to
-          // one — there is no ensemble left to carry the reweighting §06
-          // `normalize` defines ("the probability measure M / Z"). Emitting the
-          // table anyway is a draw from the UNNORMALIZED base, the same silent
-          // weight-drop the scalar branch fixes by folding. Refuse instead.
-          return Promise.reject(new Error(
-            'iid: the record measure "' + d.from + '" represents its law by '
-            + 'importance weights (a normalize over a variate-dependent '
-            + 'weighted/logweighted, or a weighted parameter ancestor), and iid '
-            + 'over it samples one k-row table whose single atom cannot carry '
-            + 'them (spec §06 normalize, §06 iid). Sampling this shape is not '
-            + 'implemented — the density path can still score it via '
-            + 'logdensityof/totalmass'));
-        }
         if (N !== 1) {
           // An N-atom ENSEMBLE of record-iid draws is N separate k-row tables;
           // no single {__table__, columns, nrows} value represents it without
@@ -1472,39 +1494,152 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           // Refuse rather than emit an ambiguous table (refuse-don't-mislower;
           // a measure-algebra scar zone). N=1 — a single sampled dataset,
           // the real use — is produced below.
-          return Promise.reject(new Error(
-            'iid: sampling iid over a record measure at >1 atoms (an ensemble '
-            + 'of tables) is not supported; sample a single dataset (1 atom)'));
+          return Promise.reject(new Error(IID_RECORD_ENSEMBLE));
         }
-        const columns: Record<string, any> = {};
-        for (const fk of Object.keys(innerM.fields)) {
-          const fv = innerM.fields[fk];
-          const fdata = (fv.value && fv.value.data) || fv.samples;
-          if (!fdata) {
-            return Promise.reject(new Error(
-              'iid: record field "' + fk + '" produced no samples'));
+        // The k rows of the one table: row r is row `rows[r]` of the draws
+        // `chunks` hold end to end (all rows of the one chunk in order when
+        // `rows` is null).
+        const tableOf = (chunks: any[], rows: Int32Array | null, extra: any) => {
+          const offsets: number[] = [];
+          let total = 0;
+          for (const c of chunks) { offsets.push(total); total += c.rows; }
+          const locate = (g: number) => {
+            let j = chunks.length - 1;
+            while (offsets[j] > g) j--;
+            return [j, g - offsets[j]];
+          };
+          const columns: Record<string, any> = {};
+          for (const fk of Object.keys(chunks[0].m.fields)) {
+            const fvs = chunks.map((c: any) => c.m.fields[fk]);
+            const fv = fvs[0];
+            const datas = fvs.map((f: any) => (f.value && f.value.data) || f.samples);
+            if (datas.some((x: any) => !x)) throw new Error('iid: record field "' + fk + '" produced no samples');
+            if (Array.isArray(fv.value)) {
+              columns[fk] = rows ? Array.from(rows, (g) => { const [j, r] = locate(g); return fvs[j].value[r]; }) : fv.value;
+              continue;
+            }
+            // A field's per-row value may itself be a vector (nested iid,
+            // kernel-broadcast, MvNormal): its inner element dims follow the
+            // row axis. Read them from the field Value's trailing shape; a
+            // scalar field has none.
+            const innerElemShape = (fv.value && Array.isArray(fv.value.shape)
+              && fv.value.shape.length > 1) ? fv.value.shape.slice(1) : [];
+            const width = innerElemShape.reduce((p: number, n: number) => p * n, 1);
+            const pick = (srcs: any[]) => {
+              if (!rows) return srcs[0];
+              const out = new Float64Array(k * width);
+              for (let r = 0; r < k; r++) {
+                const [j, i] = locate(rows[r]);
+                out.set(srcs[j].subarray(i * width, (i + 1) * width), r * width);
+              }
+              return out;
+            };
+            columns[fk] = { shape: [k].concat(innerElemShape), data: pick(datas) };
+            if (valueLib.isComplexValue(fv.value)) {
+              columns[fk].im = pick(fvs.map((f: any) => f.value.im));
+              columns[fk].dtype = 'complex';
+            }
           }
-          if (Array.isArray(fv.value)) {
-            columns[fk] = fv.value;
-            continue;
-          }
-          // A field's per-row value may itself be a vector (nested iid,
-          // kernel-broadcast, MvNormal): its inner element dims follow the k
-          // row axis. Read them from the field Value's trailing shape (its
-          // leading axis is the k count at N=1); a scalar field has none.
-          const innerElemShape = (fv.value && Array.isArray(fv.value.shape)
-            && fv.value.shape.length > 1) ? fv.value.shape.slice(1) : [];
-          columns[fk] = { shape: [k].concat(innerElemShape), data: fdata };
-          if (valueLib.isComplexValue(fv.value)) {
-            columns[fk].im = fv.value.im;
-            columns[fk].dtype = 'complex';
-          }
-        }
-        const table: any = { __table__: true, columns, nrows: k };
-        return {
-          shape: 'table', __table__: true, columns, nrows: k,
-          value: table, logTotalmass, n_eff: 1,
+          const table: any = { __table__: true, columns, nrows: k };
+          return Object.assign({
+            shape: 'table', __table__: true, columns, nrows: k,
+            value: table, logTotalmass, n_eff: 1,
+          }, extra);
         };
+        if (!foldedLW) {
+          try { return tableOf([{ m: innerM, rows: k }], null, {}); } catch (e) { return Promise.reject(e); }
+        }
+        // §06 `normalize` holds this law as importance weights on each row,
+        // and iid asks for k independent rows of the normalized law. Draw a
+        // pool of weighted rows of the measure under `normalize`, doubling it
+        // until its effective sample size reaches IID_SIR_ESS_PER_ROW · k, and
+        // pick k rows with replacement in proportion to their weights
+        // (sampling importance resampling): the pick normalizes the pool once,
+        // which is the `normalize` itself. A chunk's weights represent its
+        // empirical measure, whose uniform part is 1/(rows); adding
+        // log(rows) puts every chunk on one scale, so the pool grows by the
+        // missing rows instead of being redrawn. The pool stops at a row cap
+        // with a warning naming its ESS. A weight shared by the whole block
+        // (a weighted parameter ancestor) is one weight for the one atom; no
+        // row resampling can carry it.
+        const refuseShared = () => Promise.reject(new Error(
+          'iid: the record measure "' + d.from + '" carries an importance weight '
+          + 'shared by its whole block (a weighted parameter ancestor), and iid '
+          + 'over it samples one k-row table whose single atom cannot carry it '
+          + '(spec §06 normalize, §06 iid). Sampling this shape is not '
+          + 'implemented; the density path can still score it via '
+          + 'logdensityof/totalmass'));
+        if (sharedAtomLW.length > 0 || !innerM.logWeights) return refuseShared();
+        // The `normalize` the row weights come from: the law itself, or one
+        // reached through steps that keep each row and its weight (an alias,
+        // a pushforward, a relabel). The weighted measure under it holds the
+        // same rows with their raw weights.
+        let normName = d.from;
+        const walked = new Set<string>();
+        while (['alias', 'pushfwd', 'relabel'].includes(ctx.derivations[normName]?.kind) && !walked.has(normName)) {
+          walked.add(normName);
+          normName = ctx.derivations[normName].from;
+        }
+        const normD = ctx.derivations[normName];
+        const notNormalize = () => Promise.reject(new Error('iid: the record measure "' + d.from
+          + '" holds its law in importance weights that no normalize of a weighted measure, '
+          + 'row for row, carries, so its rows have no raw weight to resample by '
+          + '(spec §06 normalize, §06 iid)'));
+        if (!normD || normD.kind !== 'normalize') return notNormalize();
+        const chunkOf = (poolCtx: any, rows: number) => Promise.all([
+          poolCtx.getMeasure(d.from),
+          poolCtx.getMeasure(normName),
+          poolCtx.getMeasure(normD.from),
+          _perAtomLogMass(normName, poolCtx, rows),
+        ]).then(([law, norm, weighted, perRowLogZ]: any[]) => {
+          if (sharedAtomLW.length > 0) throw new Error('shared');
+          if (!law || !law.fields) {
+            throw new Error('iid: the record measure "' + d.from + '" produced no record rows');
+          }
+          // The law's weights are the normalize's, row for row.
+          const a = law.logWeights, b = norm && norm.logWeights;
+          let aligned = !!(a && b && a.length === rows && b.length === rows);
+          for (let i = 0; aligned && i < rows; i++) if (a[i] !== b[i]) aligned = false;
+          if (!aligned) throw new Error('unaligned');
+          const raw = new Float64Array(rows);
+          const lw = weighted && weighted.logWeights;
+          for (let i = 0; i < rows; i++) {
+            raw[i] = (lw ? lw[i] : -Math.log(rows)) + Math.log(rows) - (perRowLogZ ? perRowLogZ[i] : 0);
+          }
+          return { m: law, rows, raw };
+        });
+        const target = IID_SIR_ESS_PER_ROW * k;
+        const maxRows = ctx.iidSirMaxRows ?? IID_SIR_MAX_ROWS;
+        const grow = (chunks: any[]): any => {
+          const total = chunks.reduce((t: number, c: any) => t + c.rows, 0);
+          const raw = new Float64Array(total);
+          let off = 0;
+          for (const c of chunks) { raw.set(c.raw, off); off += c.rows; }
+          const ess = empirical.effectiveSampleSize({ logWeights: raw });
+          if (!(ess > 0)) {
+            throw new Error('iid: every weighted draw of "' + d.from + '" has zero weight, '
+              + 'so its normalized law has no rows to resample (spec §06 normalize)');
+          }
+          const K = total / k;
+          if (ess >= target || 2 * total > maxRows) {
+            if (ess < target) {
+              // eslint-disable-next-line no-console
+              console.warn('iid: "' + name + '" resamples ' + k + ' rows of "' + d.from
+                + '" from a pool of ' + total + ' weighted draws (K = ' + K + ') whose '
+                + 'effective sample size is ' + ess.toFixed(1) + ', below ' + target
+                + ' (' + IID_SIR_ESS_PER_ROW + ' per row); the row cap ' + maxRows
+                + ' stops the pool, so rows may repeat');
+            }
+            const rows = empirical.multinomialResample(raw, k,
+              makeMainThreadPrng(nameSeed(name + ':iid_sir', ctx.rootKey)));
+            return tableOf(chunks, rows, { n_eff: ess, sir: { K, poolRows: total, ess } });
+          }
+          return chunkOf(inflate(total, ':iid_sir:' + (2 * K)), total)
+            .then((next: any) => grow(chunks.concat([next])));
+        };
+        return chunkOf(inflatedCtx, k).then((first: any) => grow([first]))
+          .catch((e: any) => (e && e.message === 'shared' ? refuseShared()
+            : e && e.message === 'unaligned' ? notNormalize() : Promise.reject(e)));
       }
       // A TUPLE-variate inner measure — a positional `joint(M1, M2)`, or a
       // `jointchain`/`kchain` retain body, whose §06 variate is the `cat` of
@@ -4409,6 +4544,7 @@ module.exports = {
   // nothing; no production caller reads it by this name.
   _massFromEventsForTest: _massFromEvents,
   materialiseMeasure,
+  isRecordIidDataset,
   materialiseKernelBroadcastIR,
   materialiseMeasureIR,
   // P3b — materialiser pipeline (engine-concepts §18.2 / §20.10

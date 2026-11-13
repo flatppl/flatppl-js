@@ -358,25 +358,29 @@ test('iid over a normalize FOLDS the importance weights into one per atom',
       `cov(y1, y2) = ${r.cov01}, product measure oracle 0`);
   });
 
-test('iid over a RECORD normalize with importance weights is refused, not '
-  + 'sampled unnormalized', async () => {
-  // The record arm of the fallback emits ONE k-row table and forces N to 1, so
-  // there is no ensemble to carry the reweighting — a single atom's importance
-  // weight renormalises to one. Before the fold this arm assembled the table
-  // from the per-field samples and dropped the weights, which is a draw from
-  // the UNNORMALIZED joint. §06 `normalize` defines the result as "the
-  // probability measure M / Z", so refuse.
+test('iid over a RECORD normalize with importance weights samples the '
+  + 'normalized law', async () => {
+  // The record arm emits ONE k-row table, so a single atom cannot carry the
+  // reweighting. The rows are drawn by importance resampling from a weighted
+  // pool instead (iid-record-sir.test.ts). Tilting a ~ Normal(0, 1) by exp(a)
+  // gives Normal(1, 1), and b stays Normal(3, 1); both spellings agree.
+  const k = 2000;
   for (const op of ['weighted(v -> exp(v.a)', 'logweighted(v -> v.a']) {
     const { proc, ctx } = ctxFor(H
       + 'm = normalize(' + op + ', joint(a = Normal(mu = 0.0, sigma = 1.0), '
       + 'b = Normal(mu = 3.0, sigma = 1.0))))\n'
-      + 'y ~ iid(m, 3)\n', 1);
+      + 'y ~ iid(m, ' + k + ')\n', 1);
     assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
-    await assert.rejects(() => ctx.getMeasure('y'), (e: any) => {
-      assert.match(e.message, /importance weights/);
-      assert.match(e.message, /§06/);
-      return true;
-    }, op);
+    const t = await ctx.getMeasure('y');
+    assert.equal(t.nrows, k, op);
+    for (const [field, mu] of [['a', 1], ['b', 3]] as const) {
+      const xs = t.columns[field].data;
+      let mean = 0, variance = 0;
+      for (let i = 0; i < k; i++) mean += xs[i] / k;
+      for (let i = 0; i < k; i++) variance += (xs[i] - mean) ** 2 / k;
+      assert.ok(Math.abs(mean - mu) < 5 / Math.sqrt(k), `${op} ${field} mean ${mean}, oracle ${mu}`);
+      assert.ok(Math.abs(variance - 1) < 5 * Math.sqrt(2 / k), `${op} ${field} variance ${variance}, oracle 1`);
+    }
   }
 });
 
