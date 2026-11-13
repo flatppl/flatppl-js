@@ -29,6 +29,7 @@ const REGISTRY = sampler._internal.REGISTRY;
 const CASES: { name: string; args: any[] }[] = [
   { name: 'Logistic',           args: [0, 1] },
   { name: 'Weibull',            args: [2, 1] },
+  { name: 'Rayleigh',           args: [1] },
   { name: 'Pareto',             args: [2, 1] },
   { name: 'GeneralizedNormal',  args: [0, 1, 2] },
   { name: 'ChiSquared',         args: [3] },

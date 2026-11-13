@@ -25,6 +25,7 @@ const CDF: Record<string, (x: number, q: any) => number> = {
   HalfNormal:  (x, q) => x <= 0 ? 0 : 2 * normCdf(x / q.sigma) - 1,
   Logistic:    (x, q) => 1 / (1 + Math.exp(-(x - q.mu) / q.s)),
   Weibull:     (x, q) => x <= 0 ? 0 : -Math.expm1(-Math.pow(x / q.scale, q.shape)),
+  Rayleigh:    (x, q) => x <= 0 ? 0 : -Math.expm1(-0.5 * (x / q.scale) ** 2),
   Pareto:      (x, q) => x < q.scale ? 0 : 1 - Math.pow(q.scale / x, q.shape),
   Laplace:     (x, q) => { const z = (x - q.location) / q.scale; return z < 0 ? 0.5 * Math.exp(z) : 1 - 0.5 * Math.exp(-z); },
   // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x).
@@ -56,6 +57,7 @@ const SURVIVAL: Record<string, (x: number, q: any) => number> = {
   HalfNormal: (x, q) => x <= 0 ? 1 : stdlibErfc(x / (q.sigma * Math.SQRT2)),
   Logistic: (x, q) => 1 / (1 + Math.exp((x - q.mu) / q.s)),
   Weibull: (x, q) => x <= 0 ? 1 : Math.exp(-Math.pow(x / q.scale, q.shape)),
+  Rayleigh: (x, q) => x <= 0 ? 1 : Math.exp(-0.5 * (x / q.scale) ** 2),
   Pareto: (x, q) => x < q.scale ? 1 : Math.pow(q.scale / x, q.shape),
   Laplace: (x, q) => { const z = (x - q.location) / q.scale; return z > 0 ? 0.5 * Math.exp(-z) : 1 - 0.5 * Math.exp(z); },
   InverseGamma: (x, q) => x <= 0 ? 1 : stdlibGammainc(q.scale / x, q.shape),
@@ -76,6 +78,7 @@ const UPPER_QUANTILE: Record<string, (p: number, q: any) => number> = {
   HalfNormal: (p, q) => -q.sigma * probit(p / 2),
   Logistic: (p, q) => q.mu + q.s * (Math.log1p(-p) - Math.log(p)),
   Weibull: (p, q) => q.scale * Math.pow(-Math.log(p), 1 / q.shape),
+  Rayleigh: (p, q) => q.scale * Math.sqrt(-2 * Math.log(p)),
   Pareto: (p, q) => q.scale / Math.pow(p, 1 / q.shape),
   Laplace: (p, q) => p < 0.5 ? q.location - q.scale * Math.log(2 * p)
     : q.location + q.scale * Math.log(2 * (1 - p)),

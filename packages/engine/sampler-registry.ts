@@ -168,7 +168,7 @@ function _sharedPrng(opts: any) {
   return Math.random;
 }
 
-// Synthetic Logistic and Weibull — no stdlib packages installed.
+// Synthetic Logistic, Weibull and Rayleigh — no stdlib packages installed.
 // Both have simple closed-form inverse-CDFs.
 function uClip(u: any) {
   if (u <= 0)            return Number.EPSILON;
@@ -328,6 +328,57 @@ function logpdfWeibull(x: any, k: any, lambda: any) {
   }
   const z = x / lambda;
   return Math.log(k / lambda) + (k - 1) * Math.log(z) - Math.pow(z, k);
+}
+
+// Rayleigh(scale σ): pdf = (x/σ²)·exp(−x²/(2σ²)) for x ≥ 0, 0 at x = 0.
+// Inverse-CDF sampler: x = σ·√(−2·log(1−u)).
+const randRayleigh = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const o = args[args.length - 1];
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricRayleighSampler(sigma: any) {
+        const u = uClip(prng());
+        return (+sigma) * Math.sqrt(-2 * Math.log1p(-u));
+      };
+    }
+    const sigma = +args[0];
+    return function staticRayleighSampler() {
+      const u = uClip(prng());
+      return sigma * Math.sqrt(-2 * Math.log1p(-u));
+    };
+  },
+};
+
+function RayleighCtor(this: any, scale: any) {
+  this.sigma = +scale;
+  this.support = [0, Infinity];
+}
+RayleighCtor.prototype.pdf = function(this: any, x: any) {
+  if (x <= 0) return 0;
+  const z = x / this.sigma;
+  return (z / this.sigma) * Math.exp(-0.5 * z * z);
+};
+RayleighCtor.prototype.logpdf = function(this: any, x: any) {
+  return logpdfRayleigh(x, this.sigma);
+};
+RayleighCtor.prototype.cdf = function(this: any, x: any) {
+  if (x <= 0) return 0;
+  const z = x / this.sigma;
+  return -Math.expm1(-0.5 * z * z);
+};
+RayleighCtor.prototype.quantile = function(this: any, p: any) {
+  if (p <= 0) return 0;
+  if (p >= 1) return Infinity;
+  return this.sigma * Math.sqrt(-2 * Math.log1p(-p));
+};
+function logpdfRayleigh(x: any, sigma: any) {
+  if (x <= 0) return -Infinity;
+  const z = x / sigma;
+  return Math.log(z) - Math.log(sigma) - 0.5 * z * z;
 }
 
 // Pareto(shape α, scale θ): pdf = α·θ^α / x^(α+1) for x ≥ θ, else 0.
@@ -1620,6 +1671,14 @@ const REGISTRY = {
     Ctor:     WeibullCtor,
     randFn:   randWeibull,
     logpdfFn: logpdfWeibull,
+  },
+  Rayleigh: {
+    params:   ['scale'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     RayleighCtor,
+    randFn:   randRayleigh,
+    logpdfFn: logpdfRayleigh,
   },
   Pareto: {
     params:   ['shape', 'scale'],

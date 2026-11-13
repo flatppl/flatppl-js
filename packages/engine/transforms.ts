@@ -208,6 +208,7 @@ const SUPPORT_BY_DIST: Record<string, (params?: any) => any> = {
   HalfCauchy:   () => ({ kind: 'positive' }),
   HalfNormal:   () => ({ kind: 'positive' }),
   Weibull:      () => ({ kind: 'positive' }),
+  Rayleigh:     () => ({ kind: 'positive' }),
   ChiSquared:   () => ({ kind: 'positive' }),
   Beta:         () => ({ kind: 'interval', a: 0, b: 1 }),
   // Uniform handled below (needs bounds from params).

@@ -57,7 +57,8 @@ const ARG_NAMES: Record<string, string[]> = {
   Normal: ['mu', 'sigma'], LogNormal: ['mu', 'sigma'], Exponential: ['rate'],
   Uniform: ['lo', 'hi'], Beta: ['alpha', 'beta'], Gamma: ['shape', 'rate'],
   HalfNormal: ['sigma'], HalfCauchy: ['scale'], Cauchy: ['location', 'scale'],
-  Logistic: ['mu', 's'], Weibull: ['shape', 'scale'], Pareto: ['shape', 'scale'],
+  Logistic: ['mu', 's'], Weibull: ['shape', 'scale'], Rayleigh: ['scale'],
+  Pareto: ['shape', 'scale'],
   Laplace: ['location', 'scale'], Dirac: ['value'], InverseGamma: ['shape', 'scale'],
   StudentT: ['nu'], ChiSquared: ['k'],
 };

@@ -1363,6 +1363,7 @@ function activate(context: any) {
     InverseGamma: 'InverseGamma(shape = ${1:1.0}, scale = ${2:1.0})',
     Beta: 'Beta(alpha = ${1:1.0}, beta = ${2:1.0})',
     Weibull: 'Weibull(shape = ${1:1.0}, scale = ${2:1.0})',
+    Rayleigh: 'Rayleigh(scale = ${1:1.0})',
     Bernoulli: 'Bernoulli(p = ${1:0.5})',
     Categorical: 'Categorical(p = ${1:[0.5, 0.5]})',
     Binomial: 'Binomial(n = ${1:1}, p = ${2:0.5})',

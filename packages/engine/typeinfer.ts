@@ -6391,6 +6391,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
                    { name: 'beta',  pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
     Weibull:      [{ name: 'shape', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
                    { name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Rayleigh:     [{ name: 'scale', pos: 0, domain: vsLib.POSREALS, label: 'positive' }],
     Pareto:       [{ name: 'shape', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
                    { name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
     Cauchy:       [{ name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
@@ -8026,7 +8027,7 @@ function distributionSupport(
     // only; the HMC unconstraining transform still treats them as the
     // positive half-line (transforms.ts SUPPORT_BY_DIST), the x=0 boundary
     // being measure-zero — mirroring how Exponential is already handled.
-    case 'Exponential': case 'Weibull':
+    case 'Exponential': case 'Weibull': case 'Rayleigh':
     case 'Gamma': case 'ChiSquared': return vsLib.NONNEGREALS;
     case 'Beta': return vsLib.UNITINTERVAL;
     case 'Bernoulli': return vsLib.BOOLEANS;
