@@ -631,6 +631,22 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
       }
     }
 
+    // A user call a body still holds (lift keeps one whose shared argument
+    // reads the function's own input) is reduced here by the IR inliner, its
+    // shared arguments in a `let`, once every callee body is self-contained.
+    // Every reader of a function body, scan and broadcast callables included,
+    // then meets no named call, which the worker could not resolve.
+    for (const [fnName, binding] of bindings) {
+      if ((binding as any).type !== 'functionof') continue;
+      const ir = binding.ir;
+      if (!ir || ir.kind !== 'call' || ir.op !== 'functionof' || !ir.body) continue;
+      const body = _inlineUserCalls(ir.body, bindings);
+      if (body !== ir.body) {
+        binding.ir = Object.assign({}, ir, { body });
+        selfContained.add(fnName);
+      }
+    }
+
     // Re-classify the reweighting bindings that read a body this pass just
     // rewrote. Spec §06 lets `weighted`'s weight be "a function of the variate
     // x of M", and spec §04 makes a reified `functionof` such a function — but
@@ -650,7 +666,12 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
         if (!ir || ir.kind !== 'call') continue;
         if (ir.op !== 'weighted' && ir.op !== 'logweighted') continue;
         const w = Array.isArray(ir.args) && ir.args[0];
-        if (!w || w.kind !== 'ref' || w.ns !== 'self' || !selfContained.has(w.name)) continue;
+        // A weight lambda that calls a rewritten function snapshotted its
+        // pre-inlining body too (lift leaves a call whose shared arguments
+        // read the lambda's input to the IR inliner).
+        const reads = w && w.kind === 'ref' && w.ns === 'self' ? selfContained.has(w.name)
+          : w && w.kind === 'call' && w.op === 'functionof' && _callsAny(w.body, selfContained);
+        if (!reads) continue;
         const d = classifyDerivation(binding, bindings);
         if (d) derivations[name] = d;
       }
@@ -1622,6 +1643,16 @@ function _classifyWeightedByFunction(
     kind: 'weighted', from: baseName, weightIR: synth,
     isLog: !!isLog, isVariateWeight: true,
   };
+}
+
+// Does `ir` call a user function named in `names`?
+function _callsAny(ir: any, names: Set<string>): boolean {
+  const { walkIR } = require('./ir-walk.ts');
+  let found = false;
+  walkIR(ir, (n: any) => {
+    if (!found && n && n.kind === 'call' && !n.op && n.target?.ns === 'self' && names.has(n.target.name)) found = true;
+  });
+  return found;
 }
 
 // Beta-reduce calls of user functions in a weight body. The worker has no

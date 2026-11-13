@@ -179,6 +179,9 @@ empty broadcasts keep their columns without evaluating a cell.
 Array indexing preserves nested element types and runtime nesting tags.
 Lift visits indexed objects and index expressions so user calls beneath either
 position receive ordinary argument substitution before worker evaluation.
+An argument that the inlined body reads two or more times, and that is not a
+leaf, is evaluated once: a synthetic `__argN` binding when it reads only module
+bindings, otherwise a call left for the IR inliner, which binds it in a `let`.
 Tuple evaluation retains callable components as body/interface descriptors;
 projected call heads reuse the ordinary runtime argument binder. These opaque
 objects carry no JavaScript closure and remain serializable across workers.
