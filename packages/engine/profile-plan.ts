@@ -54,6 +54,7 @@ const DISTRIBUTION_SUPPORT: Record<string, any> = {
   Gamma:        { kind: 'posreals' },
   LogNormal:    { kind: 'posreals' },
   Weibull:      { kind: 'posreals' },
+  Rayleigh:     { kind: 'posreals' },
   Pareto:       { kind: 'posreals' },
   InverseGamma: { kind: 'posreals' },
   ChiSquared:   { kind: 'posreals' },

@@ -21,6 +21,7 @@ const DENSITIES: Array<[string, string]> = [
   ['Gamma(shape = 2.5, rate = 1.5)', 'inf'],
   ['InverseGamma(shape = 2.5, scale = 1.5)', 'inf'],
   ['Weibull(shape = 2.5, scale = 1.5)', 'inf'],
+  ['Rayleigh(scale = 1.5)', 'inf'],
   ['ChiSquared(k = 2.5)', 'inf'],
   ['Exponential(rate = 2.5)', 'inf'],
   ['LogNormal(mu = 0.0, sigma = 2.5)', 'inf'],

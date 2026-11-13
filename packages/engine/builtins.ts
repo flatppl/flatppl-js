@@ -180,7 +180,7 @@ const BUILTIN_FUNCTIONS = new Set([
 const DISTRIBUTIONS = new Set([
   // Continuous
   'Uniform', 'Normal', 'GeneralizedNormal', 'Cauchy', 'StudentT',
-  'Logistic', 'LogNormal', 'Exponential', 'Gamma', 'Weibull',
+  'Logistic', 'LogNormal', 'Exponential', 'Gamma', 'Weibull', 'Rayleigh',
   'Pareto', 'InverseGamma', 'Beta', 'ChiSquared', 'VonMises', 'Laplace',
   // Discrete
   'Bernoulli', 'Categorical', 'Categorical0', 'Binomial', 'Poisson',

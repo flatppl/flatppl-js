@@ -571,7 +571,7 @@ const NAMED_SET_NAMES = new Set([
 // distribution we don't list, the chain comes back unsupported instead
 // of failing later in the worker.
 const SAMPLEABLE_DISTRIBUTIONS = new Set([
-  'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull', 'Pareto',
+  'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull', 'Rayleigh', 'Pareto',
   'LogNormal', 'Beta', 'Gamma', 'InverseGamma',
   'GeneralizedNormal', 'ChiSquared', 'VonMises', 'Laplace',
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
