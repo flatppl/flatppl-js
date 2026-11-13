@@ -7,9 +7,8 @@
 //
 // `latents` — transitively-required `draw`-type bindings of the prior,
 // each carrying distOp, resolved scalar params, support, and discrete flag.
-// Enumerates by walking binding.deps from the prior root name (mirrors
-// buildSampleChain's dep walk in orchestrator.ts:195–265), using the same
-// classifyForChain + lowerExpr approach to extract distIR.
+// Walks the prior's effective dependencies in topological order and uses
+// classifyForChain + lowerExpr to extract distIR.
 //
 // `logLikelihood(theta)` — synchronously scores the likelihood body at a
 // single theta point using density.logDensityN with refArrays built from
@@ -30,7 +29,7 @@ const { DISCRETE_DISTRIBUTIONS } = orchestrator;
 const bijReg                    = require('./bijection-registry.ts');
 
 // Collect transitively-required `draw`-type bindings of `rootName`.
-// Mirrors the DFS dep walk in orchestrator.buildSampleChain (orchestrator.ts:195–265).
+// Visits dependencies before their draws, including synthesized marginals.
 // For each draw-type binding, extracts distIR via classifyForChain (same accessor
 // used at orchestrator.ts:244), resolves scalar params via orchestrator.resolveIRToValue,
 // and looks up support via transforms.supportOf.
@@ -46,8 +45,8 @@ function collectLatents(rootName: string, ctx: any): any[] {
     const b = bindings.get(name);
     if (!b) return;
 
-    // Recurse deps first (topological order, same as buildSampleChain).
-    for (const dep of (b.deps || [])) visit(dep);
+    // Visit dependencies first so hierarchical parents precede their draws.
+    for (const dep of (b.effectiveDeps || b.deps || [])) visit(dep);
 
     if (b.type === 'draw') {
       // Lower the RHS (same as orchestrator.ts:228).
@@ -540,7 +539,9 @@ function collectDrawNames(rootName: string, ctx: any): string[] {
     seen.add(n);
     const b = bindings.get(n);
     if (!b) return;
-    for (const dep of (b.deps || [])) visit(dep);
+    // Disintegration replaces the full joint with a marginal. Its literal
+    // dependencies still name that joint, including conditioned observations.
+    for (const dep of (b.effectiveDeps || b.deps || [])) visit(dep);
     if (b.type === 'draw') out.push(n);
   })(rootName);
   return out;
