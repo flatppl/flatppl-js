@@ -2640,6 +2640,13 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
 // reads `body` / `params` directly off the functionof IR.
 function _resolveFn(fnIR: any, env: any) {
   if (!fnIR) return null;
+  // §03 tuples hold objects, including callables. A projected callable keeps
+  // its body and interface rather than becoming a numeric runtime value.
+  if (fnIR.kind === 'ref' && env?.[fnIR.name]?.__flatpplCallable) return env[fnIR.name];
+  if (fnIR.kind === 'call' && fnIR.op !== 'functionof') {
+    const value = evaluateExpr(fnIR, env);
+    return value?.__flatpplCallable ? value : null;
+  }
   if (fnIR.kind === 'ref' && fnIR.ns === 'self') {
     if (typeof env.__resolveFnBody === 'function') {
       const fn = env.__resolveFnBody(fnIR.name);
@@ -2681,6 +2688,15 @@ function _resolveFn(fnIR: any, env: any) {
     };
   }
   return null;
+}
+
+/**
+ * §03: object arguments and tuple components may be callables. Retain their
+ * serializable body and interface instead of resolving them as numeric values.
+ */
+function evaluateObject(ir: any, env: any): any {
+  const fn = ir.kind === 'ref' || ir.op === 'functionof' ? _resolveFn(ir, env) : null;
+  return fn ? { ...fn, __flatpplCallable: true } : evaluateExpr(ir, env);
 }
 
 // Build a synthetic functionof-shaped wrapper for a module-aliased
@@ -2933,8 +2949,9 @@ function evaluateCall(ir: any, env: any): any {
   if (ir && ir.target && ir.target.ns && ir.target.ns !== 'self') {
     return _evaluateStandardModuleCall(ir, env);
   }
-  // Self-target call `(call target={ns:'self', name} args, kwargs)` — a
-  // user-defined function application (lower.ts). Resolve its body via the
+  // Self-target or expression-headed call (spec §11 %call) — a user-defined
+  // function application. Expression heads include callable tuple projections.
+  // Resolve its body via the
   // env's __resolveFnBody hook (the same resolver higher-order ops use),
   // bind args to params (positional, then kwargs mapped surface→internal),
   // and evaluate the body. Enables scoring a determinized prior whose params
@@ -2944,8 +2961,8 @@ function evaluateCall(ir: any, env: any): any {
   // body evaluated here as a value only succeeds if that value is otherwise
   // evaluable — otherwise it falls through to the clear throw, unchanged.
   // Not a resolvable function → fall through to the op-chain (clear error).
-  if (ir && ir.target && ir.target.ns === 'self') {
-    const fn = _resolveFn({ kind: 'ref', ns: 'self', name: ir.target.name }, env);
+  if (ir && (ir.callee || ir.target?.ns === 'self')) {
+    const fn = _resolveFn(ir.callee || { kind: 'ref', ns: 'self', name: ir.target.name }, env);
     if (fn && fn.body) {
       const params: string[] = fn.params || [];
       // Surface kwarg names (paramKwargs) map to internal placeholder param
@@ -2958,10 +2975,10 @@ function evaluateCall(ir: any, env: any): any {
       const posArgs = ir.args || [];
       const kw = ir.kwargs || {};
       const sole = posArgs.length === 1 && Object.keys(kw).length === 0;
-      const soleValue = sole ? evaluateExpr(posArgs[0], env) : undefined;
+      const soleValue = sole ? evaluateObject(posArgs[0], env) : undefined;
       const fields = sole && !require('./types.ts').acceptsPositional(fn, 1)
         ? _callSplatFields(soleValue, posArgs[0],
-        params.map((p, i) => paramKwargs[i] || p), ir.target.name) : null;
+        params.map((p, i) => paramKwargs[i] || p), ir.target?.name || '<expression>') : null;
       if (!fields && posArgs.length && !require('./types.ts').acceptsPositional(fn, posArgs.length)) {
         throw new Error('evaluateCall: callable does not admit these positional inputs');
       }
@@ -2972,12 +2989,12 @@ function evaluateCall(ir: any, env: any): any {
           continue;
         }
         if (i < posArgs.length) {
-          callEnv[params[i]] = sole ? soleValue : evaluateExpr(posArgs[i], env);
+          callEnv[params[i]] = sole ? soleValue : evaluateObject(posArgs[i], env);
           continue;
         }
         const argIR = (kw[surface] !== undefined) ? kw[surface]
           : (kw[params[i]] !== undefined ? kw[params[i]] : undefined);
-        if (argIR !== undefined) callEnv[params[i]] = evaluateExpr(argIR, env);
+        if (argIR !== undefined) callEnv[params[i]] = evaluateObject(argIR, env);
         // else leave unbound → the body's ref throws a clear unbound error.
       }
       return evaluateExpr(fn.body, callEnv);
@@ -3049,9 +3066,10 @@ function evaluateCall(ir: any, env: any): any {
   }
   // tuple(...) — JS array of evaluated args. Used for surface
   // `(a, b, ...)` literals and as an intermediate value when downstream
-  // code projects via tuple_get.
+  // code projects via tuple_get. Callable components retain a serializable
+  // body/interface descriptor: tuples contain objects, not only values (§03).
   if (op === 'tuple') {
-    return (ir.args || []).map((a: any) => evaluateExpr(a, env));
+    return (ir.args || []).map((a: any) => evaluateObject(a, env));
   }
   // fixed(x) — identity at runtime. Spec §03 value types: "fixed(x)
   // is semantically identical to identity(x) during FlatPPL code
