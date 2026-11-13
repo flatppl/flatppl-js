@@ -3248,6 +3248,8 @@ const KIND_HANDLERS = {
   // transformations (mat-transformations.ts)
   truncate:     (name: any, d: any, ctx: any) => transforms.matTruncate(d, ctx),
   pushfwd:      (name: any, d: any, ctx: any) => transforms.matPushfwd(name, d, ctx),
+  relabel:      (name: any, d: any, ctx: any) => ctx.getMeasure(d.from)
+    .then((m: any) => transforms.relabelMeasure(m, d.names)),
   // multivariate distributions (mat-multivariate.ts)
   mvnormal:     (name: any, d: any, ctx: any) => multivariate.matMvNormal(name, d, ctx),
   dirichlet:    (name: any, d: any, ctx: any) => multivariate.matDirichlet(name, d, ctx),
@@ -4145,6 +4147,13 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // (matJointchain and the FLATPPL_CLM dual-mode toggle are retired).
   if (ir.op === 'clm') {
     return matClm(ir, ctx);
+  }
+  if (ir.op === 'relabel' && ir.args?.length === 2) {
+    const names = require('./derivations.ts').selectorNames(ir.args[1]);
+    if (!names) return Promise.reject(new Error('relabel: names must be a fixed list of strings'));
+    const { register, childCtx } = _bridgeRegister(ctx);
+    const from = _bridgeMeasureFrom(ir.args[0], register, 'relabel:base');
+    return childCtx.getMeasure(from).then((m: any) => transforms.relabelMeasure(m, names));
   }
   // lawof(M) → peel, recurse on M.
   if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {

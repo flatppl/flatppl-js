@@ -11,7 +11,7 @@ import { materialiseConcreteMeasure, materialiseAppliedKernelByName } from './pl
 import { buildPresetControl } from './render-controls.js';
 
 import { getMeasure, tryGetMeasure } from './engine-facade.js';
-import { activePresetFor } from './overrides.js';
+import { activePresetFor, computeAutoValues } from './overrides.js';
 import { showPlotMessage } from './render-frame.js';
 import { renderConstantRecord, renderRecordMarginals } from './render-record.js';
 import { arrayInputLength, defaultValueForInputType, esc } from './util.js';
@@ -63,7 +63,7 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   for (let k = 0; k < sig.inputs.length; k++) {
     inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
   }
-  const active = activePresetFor(ctx, plan);
+  const active = { values: Object.assign({}, computeAutoValues(ctx, plan), activePresetFor(ctx, plan).values) };
   // Cache key embeds the active preset's values directly so two
   // states of the same preset (with vs. without overrides, or
   // two different override sets) don't collide on cached

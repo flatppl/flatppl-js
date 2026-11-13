@@ -634,15 +634,16 @@ function _bindAppliedBoundaries(body: any, applied: Record<string, any>, mc: boo
       }
       return out || node;
     }
-    if (node.kind === 'ref' && node.ns === 'self' && !shadowed.has(node.name)) {
+    if (node.kind === 'ref' && (node.ns === 'self' || node.ns === '%local') && !shadowed.has(node.name)) {
       if (Object.prototype.hasOwnProperty.call(applied, node.name)) return applied[node.name];
       kept.add(node.name);
       return node;
     }
     if (node.kind !== 'ref' && typeof node.ref === 'string') kept.add(node.ref);
-    // A reified body binds its identifier params, and a bijection function
-    // body binds its parameter, so neither reads a like-named boundary.
-    const bound = irWalk.identifierBoundParams(node);
+    // This substitution also targets %local refs, so nested placeholder
+    // parameters shadow the caller's placeholders as well as module inputs.
+    const bound = node.kind === 'call' && (node.op === 'functionof' || node.op === 'kernelof')
+      ? node.params : irWalk.identifierBoundParams(node);
     const inner = bound && node.body ? new Set([...shadowed, ...bound])
       : node.paramName && node.body ? new Set([...shadowed, node.paramName]) : shadowed;
     let out: any = null;
