@@ -41,6 +41,9 @@ test('the shipped highlighter loads its assets from the given URLs and paints so
   assert.deepEqual(classed, ['tok-ident:p', 'tok-op:~', 'tok-dist:Normal', 'tok-op:.', 'tok-func:invlogit', 'tok-op:.',
     'tok-ident:eta', 'tok-number:1.5', 'tok-comment:# note']);
   assert.equal(runs.map((r) => r.text).join(''), 'p ~ Normal.(invlogit.(eta), 1.5)  # note');
+  const relabel = Array.from(tm.highlightText('sig_shape = relabel(MvNormal(mu = [0.0, 0.0], cov = sig_cov), ["x", "y"])'));
+  assert.equal(relabel.find((r) => r.text === 'relabel').cls, 'tok-func');
+  assert.equal(relabel.find((r) => r.text === 'MvNormal').cls, 'tok-dist');
   // §05: a `#` line comment and a `%` doc line run to the end of the line;
   // a `;` inside them is comment text.
   const comments = (src) => Array.from(tm.highlightText(src)).filter((r) => r.cls === 'tok-comment').map((r) => r.text.trim()).join('');

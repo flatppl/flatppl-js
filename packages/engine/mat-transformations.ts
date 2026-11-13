@@ -42,6 +42,41 @@ const bijRegistry = require('./bijection-registry.ts');
 const sampler = require('./sampler.ts');
 const derivations = require('./derivations.ts');
 
+function relabelMeasure(M: any, names: string[]) {
+  let components = M.fields ? Object.values(M.fields) : M.elems;
+  if (!components) {
+    const valueLib = require('./value.ts');
+    const v = valueLib._logicalDense(shared.measureToRefValue(M, 'base', 'relabel'));
+    if (v.shape.length === 1) components = [M];
+    else {
+      const [N, count] = v.shape;
+      const tail = v.shape.slice(2);
+      const stride = tail.reduce((a: number, b: number) => a * b, 1);
+      components = Array.from({ length: count }, (_, j) => {
+        const out: any = { shape: [N, ...tail], data: new v.data.constructor(N * stride) };
+        if (v.im) out.im = new v.im.constructor(N * stride);
+        if (v.dtype) out.dtype = v.dtype;
+        for (let i = 0; i < N; i++) {
+          const start = (i * count + j) * stride;
+          out.data.set(v.data.subarray(start, start + stride), i * stride);
+          if (v.im) out.im.set(v.im.subarray(start, start + stride), i * stride);
+        }
+        return measureFromValue(out, {});
+      });
+    }
+  }
+  if (components.length !== names.length) {
+    throw new Error('relabel: give one name per array element or record field '
+      + '(spec §04 "Interface adaptation")');
+  }
+  // Rename one already-sampled atom. Splitting the law into independent draws
+  // would discard correlations, and repeating its weights would change its mass.
+  const fields = Object.fromEntries(names.map((name, i) => [name, components[i]]));
+  return Object.assign(empirical.recordMeasure(fields, M.logWeights), {
+    logTotalmass: shared.massOf(M), n_eff: M.n_eff,
+  });
+}
+
 function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
   // pushfwd(f, M): the pushforward of M through function f. Per spec
   // §06, samples are { f(x) : x ~ M }.
@@ -554,6 +589,7 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
 }
 
 module.exports = {
+  relabelMeasure,
   matPushfwd,
   matTruncate,
 };
