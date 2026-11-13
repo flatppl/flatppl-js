@@ -21,6 +21,8 @@ import { renderPlotFrame, renderConstantValue, disposePlotCharts } from './rende
 import { listScalarAxes, qualityTooltip, samplesAreConstant } from './util.js';
 export function measureIsConstant(ctx: Ctx, m: any): boolean {
   if (!m) return false;
+  // A dataset's rows are draws, whatever their count against SAMPLE_COUNT.
+  if (m.dataset) return false;
   if (m.fields) {
     for (const k in m.fields) {
       if (!measureIsConstant(ctx, m.fields[k])) return false;
@@ -561,6 +563,25 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
   // is non-fatal — fall back to a count-only display so the chart
   // still draws. console.error surfaces real bugs in the quality
   // classifier without breaking user-facing rendering.
+  // One dataset (an iid over a record law): its rows, and for rows drawn by
+  // importance resampling the pool's effective sample size.
+  if (measure && measure.dataset) {
+    const ds = measure.dataset;
+    const rowsSpan = document.createElement('span');
+    rowsSpan.className = 'dataset-rows';
+    rowsSpan.textContent = formatSampleCount(ds.rows) + ' rows (one dataset)';
+    rowsSpan.title = 'One draw of an iid over a record law: a table of ' + ds.rows + ' rows.';
+    wrap.appendChild(rowsSpan);
+    if (ds.sir) {
+      const essSpan = document.createElement('span');
+      essSpan.className = 'dataset-ess';
+      essSpan.textContent = 'pool ESS ' + formatSampleCount(Math.round(ds.sir.ess));
+      essSpan.title = 'The rows were resampled from ' + ds.sir.poolRows + ' importance-weighted draws '
+        + '(K = ' + ds.sir.K + '), whose effective sample size is ' + ds.sir.ess.toFixed(1) + '.';
+      wrap.appendChild(essSpan);
+    }
+    return wrap;
+  }
   try {
     const dof = FlatPPLEngine.empirical.estimateDof(measure);
     const q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
