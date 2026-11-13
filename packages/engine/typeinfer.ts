@@ -4836,7 +4836,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (T.isMeasure(m2)) {
       const cod = codomain(m2.domain);
       if (cod?.kind === 'failed') return cod;
-      return T.measure(cod || T.REAL);
+      // An unknown base variate cannot prove a scalar pushforward codomain.
+      return T.measure(cod || (['deferred', 'any'].includes(m2.domain?.kind) ? T.deferred() : T.REAL));
     }
     if (m2 && m2.kind === 'kernel') {
       // pushfwd acts on the kernel's OUTPUT measures (spec §06); preserve the
