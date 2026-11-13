@@ -45,6 +45,37 @@ export function getMeasure(ctx: Ctx, name: any) {
     p.then((m: any) => cache.set(name, m), () => {});
     return p;
   }
+  // A dataset (iid over a record law) is ONE k-row table, at one atom: an
+  // ensemble of tables has no value, so the engine refuses any other count.
+  // It is drawn in a context of its own, whose upstream draws are at one
+  // atom too, and shown as one dataset (`datasetMeasure`).
+  const engineCtx = { derivations: state.derivations, bindings: state.bindings };
+  if (FlatPPLEngine.materialiser.isRecordIidDataset(name, engineCtx)) {
+    const own = new Map();
+    const dsCtx: any = {
+      derivations: state.derivations,
+      bindings:    state.bindings,
+      fixedValues: state.fixedValues,
+      moduleRegistry: state.moduleRegistry,
+      getMeasure: function (n: any) {
+        if (own.has(n)) return own.get(n);
+        const p = isCurrent() ? FlatPPLEngine.materialiser.materialiseMeasure(n, dsCtx)
+          : Promise.reject(new Error('model changed'));
+        own.set(n, p);
+        return p;
+      },
+      sendWorker: function (m: any) {
+        return isCurrent() ? sendWorker(ctx, m) : Promise.reject(new Error('model changed'));
+      },
+      sampleCount: 1,
+      rootSeed:    ctx.rootSeed,
+      rejectionBudget: ctx.REJECTION_BUDGET,
+      inferenceOpts: io,
+    };
+    const p = dsCtx.getMeasure(name).then(datasetMeasure);
+    p.then(function (m: any) { cache.set(name, m); }, function () {});
+    return p;
+  }
   // All per-kind materialisation lives in the engine — the viewer's
   // job here is just to memoise the result against the cache. The
   // engine-side materialiser dispatches by derivation kind, computes
@@ -82,6 +113,35 @@ export function getMeasure(ctx: Ctx, name: any) {
   // rejection. The returned `promise` still rejects for the caller.
   promise.then(function(m: any) { cache.set(name, m); }, function() {});
   return promise;
+}
+
+// A dataset table as a record measure over its rows: one field per scalar
+// column, and one per component of a vector column (`p[1]`, `p[2]`, …), so the
+// record views show its columns and row histograms. `dataset` carries the row
+// count and, for rows drawn by importance resampling, the pool's ESS and K.
+export function datasetMeasure(t: any) {
+  const emp = FlatPPLEngine.empirical;
+  const rows = t.nrows;
+  const fields: any = {};
+  for (const name of Object.keys(t.columns || {})) {
+    const col = t.columns[name];
+    if (!col || !col.data || !Array.isArray(col.shape)) continue;
+    const inner = col.shape.slice(1);
+    const width = inner.reduce((p: number, n: number) => p * n, 1);
+    if (width === 1) {
+      fields[name] = { shape: 'scalar', samples: Float64Array.from(col.data), logWeights: null };
+      continue;
+    }
+    for (let j = 0; j < width; j++) {
+      const xs = new Float64Array(rows);
+      for (let r = 0; r < rows; r++) xs[r] = col.data[r * width + j];
+      fields[name + '[' + (j + 1) + ']'] = { shape: 'scalar', samples: xs, logWeights: null };
+    }
+  }
+  return Object.assign(emp.recordMeasure(fields, null), {
+    n_eff: rows,
+    dataset: { rows, n_eff: t.n_eff, sir: t.sir || null },
+  });
 }
 
 export function fixedValueToMeasure(ctx: Ctx, v: any) {
