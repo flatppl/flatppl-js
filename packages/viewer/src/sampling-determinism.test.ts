@@ -55,6 +55,8 @@ async function plotInWindow(source, target, settings) {
     const before = env.charts.length;
     const sent = InProcessWorker.posted.length;
     const plot = view.snapshotPanel('plot').plot;
+    if (settings.inputValues) plot.planMemory = plot.planMemory.map(([name, memory]) =>
+      [name, { ...memory, autoOverride: { values: settings.inputValues } }]);
     view.restorePanel('plot', { plot: { ...plot, sampleCount: settings.sampleCount, rootSeed: settings.rootSeed,
       inferenceOpts: { ...plot.inferenceOpts, ...settings.inferenceOpts } } });
     for (let i = 0; i < 100 && env.charts.length === before; i++) await settle();
@@ -77,6 +79,16 @@ test('two windows plot identical forward samples, and another seed plots others'
   assert.deepEqual(b.charts, a.charts);
   const other = await plotInWindow(FORWARD, 'x', { ...settings, rootSeed: 2 });
   assert.notDeepEqual(other.charts, a.charts);
+});
+
+test('a kernel plot uses the same automatic input value its control displays', async () => {
+  const source = 'n_sig = elementof(interval(0, 150))\nx = Normal(mu = n_sig, sigma = 1.0)\n';
+  const settings = { sampleCount: 256, rootSeed: 1, inferenceOpts: { backend: 'is' } };
+  const auto = await plotInWindow(source, 'x', settings);
+  const explicit = await plotInWindow(source, 'x', { ...settings, inputValues: { n_sig: 75 } });
+  assert.deepEqual(auto.charts, explicit.charts);
+  const zero = await plotInWindow(source, 'x', { ...settings, inputValues: { n_sig: 0 } });
+  assert.notDeepEqual(auto.charts, zero.charts);
 });
 
 test('two windows plot an identical MH posterior, and another seed plots another', async () => {
