@@ -249,6 +249,7 @@ export type DerivationKind =
   | 'jointchain'
   | 'truncate'
   | 'pushfwd'
+  | 'relabel'
   | 'bayesupdate'
   | 'logdensityof'
   | 'totalmass'
@@ -535,6 +536,13 @@ export interface DerivationPushfwd {
   bijection?: any;
 }
 
+/** Rename the components of each atom without changing their joint law. */
+export interface DerivationRelabel {
+  kind: 'relabel';
+  from: string;
+  names: string[];
+}
+
 /** Bayesian update — posterior = importance-reweighted prior. */
 export interface DerivationBayesupdate {
   kind: 'bayesupdate';
@@ -776,6 +784,7 @@ export type Derivation =
   | DerivationJointchain
   | DerivationTruncate
   | DerivationPushfwd
+  | DerivationRelabel
   | DerivationBayesupdate
   | DerivationLogdensityof
   | DerivationLikelihoodDensity

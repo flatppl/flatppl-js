@@ -58,6 +58,7 @@ import type {
   DerivationNormalize,
   DerivationPushfwd,
   DerivationRecord,
+  DerivationRelabel,
   DerivationSample,
   DerivationSelect,
   DerivationSuperpose,
@@ -3496,11 +3497,8 @@ function _singleRelabelName(name: string, bindings: any): string | null {
 //     under that record field. Lift supplies a binding for an inline leaf.
 //     classifyRecordOrJoint unwraps these fields when named components are
 //     combined, preserving the same shape as the keyword spelling.
-// A multi-name relabel of any other base, such as §04's
-// `relabel(iid(M, n), names)`, gets no derivation here. Its density still
-// scores: logdensityof lowers the binding structurally (_expandStructural's
-// relabel arm) and the walker consumes the record field by field.
-function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationRecord | null {
+// Other bases retain one joint atom and rename its components at materialisation.
+function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationRecord | DerivationRelabel | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseIR = rhsIR.args[0];
   const names = _selectorNames(rhsIR.args[1]);
@@ -3514,10 +3512,13 @@ function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationReco
     return { kind: 'record', fields };
   }
 
-  if (names.length !== 1) return null;
   if (baseIR.kind === 'ref' && baseIR.ns === 'self') {
     if (!bindings.has(baseIR.name)) return null;
-    return { kind: 'record', fields: { [names[0]]: baseIR.name } };
+    if (names.length === 1 && bindings.get(baseIR.name).inferredType?.domain?.kind !== 'array') {
+      return { kind: 'record', fields: { [names[0]]: baseIR.name } };
+    }
+    if (!isMeasureBinding(bindings.get(baseIR.name))) return null;
+    return { kind: 'relabel', from: baseIR.name, names };
   }
   return null;
 }
@@ -4317,7 +4318,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   }
   // pushfwd: the base measure must be resolvable. f is a function
   // binding referenced by name; we trust the binding map.
-  if (d.kind === 'pushfwd') {
+  if (d.kind === 'pushfwd' || d.kind === 'relabel') {
     return resolvable(d.from);
   }
   // NOTE: bayesupdate / likelihood_density / logdensityof / jointchain
@@ -6487,6 +6488,7 @@ module.exports = {
   classifyPushfwd,
   // Spec §06 case-2 projection-shape test, shared with matPushfwd.
   fieldProjectionSelector,
+  selectorNames: _selectorNames,
   // Refusal gate for a projection whose dropped mass is uncertified —
   // called from both derivation dispatch points.
   assertProjectionMassCertified,
