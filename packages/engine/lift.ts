@@ -697,6 +697,14 @@ function liftInlineSubexpressions(bindings: any) {
 
   function visit(astNode: any) {
     if (!astNode) return;
+    if (astNode.type === 'IndexExpr') {
+      // §05 Postfix permits calls in both the indexed object and its indices.
+      // Lift them before lowering so substituted callable inputs do not leave
+      // unresolved named calls in the worker's numeric expression.
+      astNode.object = liftValue(astNode.object);
+      astNode.indices = astNode.indices.map((index: any) => liftValue(index));
+      return;
+    }
     if (astNode.type === 'FieldAccess') {
       // A record-producing call can occur beneath a field read, including
       // calls introduced by substitution inside a scan's local scope.

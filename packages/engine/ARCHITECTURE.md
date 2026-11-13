@@ -177,6 +177,8 @@ Inference retains table schemas on source calls across lift's re-lowering, so
 empty broadcasts keep their columns without evaluating a cell.
 
 Array indexing preserves nested element types and runtime nesting tags.
+Lift visits indexed objects and index expressions so user calls beneath either
+position receive ordinary argument substitution before worker evaluation.
 Tuple evaluation retains callable components as body/interface descriptors;
 projected call heads reuse the ordinary runtime argument binder. These opaque
 objects carry no JavaScript closure and remain serializable across workers.
