@@ -202,7 +202,7 @@ function annotate(
  * Read-only accessor: returns the cached annotation if present, else
  * computes the structural skeleton (no static lengths). Use this when
  * the caller doesn't carry a static-length resolver — the runtime
- * `resolveAxisLengths` will fill in the missing entries.
+ * `resolveAxisLengths` resolves missing lengths for each invocation.
  */
 function getCanonical(ir: any): AggregateCanonical | null {
   return annotate(ir);
@@ -213,9 +213,9 @@ function getCanonical(ir: any): AggregateCanonical | null {
  * consulting the runtime body via `lengthOfAxisInBody(axisName)`. The
  * resolver is supplied by the caller — single-point runtime uses
  * `evaluateExpr` on `get(...)` containers, atom-batched runtime uses
- * a similar shape inspection over `refArrays`. Mutates the canonical
- * form's axisLengths in place when resolution succeeds; returns the
- * fully-resolved lengths map.
+ * a similar shape inspection over `refArrays`. Returns the fully-resolved
+ * lengths map without changing the static annotation: generic function
+ * bodies share their IR across calls with different runtime array shapes.
  *
  * Throws a clear diagnostic on any axis that can't be resolved.
  */
@@ -232,7 +232,6 @@ function resolveAxisLengths(
       const resolved = lengthOfAxisInBody(axisName);
       if (resolved == null) { missing.push(axisName); continue; }
       v = resolved;
-      canonical.axisLengths[axisName] = v;
     }
     out[axisName] = v;
   }
@@ -242,7 +241,6 @@ function resolveAxisLengths(
       + `${missing.map((a) => '.' + a).join(', ')} — each axis must `
       + `index a known array at least once in expr`);
   }
-  canonical.fullyResolved = true;
   return out;
 }
 
