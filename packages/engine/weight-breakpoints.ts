@@ -17,6 +17,8 @@
 // file does not know to be continuous. Guessing a window there would score a
 // silently wrong normalizer.
 
+const { letView } = require('./let-view.ts');
+
 const _lit = (v: number) => ({ kind: 'lit', value: v });
 const _call = (op: string, ...args: any[]) => ({ kind: 'call', op, args });
 
@@ -103,14 +105,24 @@ function continuousFunction(f: any): boolean {
 }
 
 function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
-  mentions: (n: any) => boolean): Discontinuities {
+  baseMentions: (n: any) => boolean): Discontinuities {
   const cuts: any[] = [];
   const steps: Step[] = [];
   let refuse: string | null = null;
 
+  // A `let` name reads its value. After renaming, no name shadows another or
+  // the variate, so a name mentions the variate exactly when its value does.
+  const view = letView(body);
+  body = view.ir;
+  const { isBound, close } = view;
+  const deref = view.resolve;
+  const bound = view.bound;
+  const mentions = view.mentions(baseMentions);
+
   const affine = (n: any): Affine | null => {
     if (isVariate(n)) return { a: _lit(1), b: _lit(0) };
     if (!mentions(n)) return { a: _lit(0), b: n };
+    if (isBound(n) || n.op === 'let') return affine(deref(n));
     if (n.kind !== 'call' || !Array.isArray(n.args)) return null;
     const [p, q] = n.args;
     if (n.op === 'neg' && n.args.length === 1) {
@@ -140,7 +152,8 @@ function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
   const test = (l: any, r: any): boolean => {
     const f = affine(l), g = affine(r);
     if (f && g) { cuts.push(root({ a: sub(f.a, g.a), b: sub(f.b, g.b) }, _lit(0))); return true; }
-    for (const [side, other] of [[l, r], [r, l]]) {
+    for (const [bside, other] of [[l, r], [r, l]]) {
+      const side = deref(bside);
       if (side && side.kind === 'call' && side.op === 'abs' && side.args?.length === 1 && !mentions(other)) {
         const h = affine(side.args[0]);
         if (h) { cuts.push(root(h, other), root(h, _call('neg', other))); return true; }
@@ -158,7 +171,7 @@ function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
       return;
     }
     if (n.op === 'in' && n.args?.length === 2) {
-      const [v, set] = n.args;
+      const v = n.args[0], set = deref(n.args[1]);
       // §03's named real intervals have the same finite cuts. Open/closed
       // endpoints remain owned by `in`; isolated points have zero Lebesgue mass.
       const bounds = set?.kind === 'const'
@@ -169,6 +182,11 @@ function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
       if (!ok) refuse = 'an `in` test on an expression that is not affine in the variate, or on a set that is not an interval' + where(n);
       return;
     }
+    if (n.op === 'let') {
+      for (const a of n.assigns) if (mentions(a.value)) visit(a.value);
+      visit(n.body);
+      return;
+    }
     if (STEP_OPS.has(n.op)) {
       const f = n.args?.length === 1 ? affine(n.args[0]) : null;
       if (!f) { refuse = '`' + n.op + '` of an expression that is not affine in the variate' + where(n); return; }
@@ -176,7 +194,7 @@ function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
       return;
     }
     if (n.op === 'broadcast' && n.args?.length >= 2) {
-      if (!continuousFunction(n.args[0])) {
+      if (!continuousFunction(deref(n.args[0]))) {
         refuse = 'a `broadcast` of the variate through a function that may jump' + where(n);
         return;
       }
@@ -190,7 +208,14 @@ function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
     for (const k in n) if (k !== 'loc' && k !== 'meta') visit(n[k]);
   };
   visit(body);
-  return { cuts, steps, refuse };
+  if (bound.size === 0) return { cuts, steps, refuse };
+  // A cut may read let names. Close it over the assigns it reads, so a caller
+  // evaluates it in θ alone.
+  return {
+    cuts: cuts.map(close),
+    steps: steps.map((st) => ({ op: st.op, a: close(st.a), b: close(st.b) })),
+    refuse,
+  };
 }
 
 module.exports = { weightDiscontinuities, CONTINUOUS_OPS };

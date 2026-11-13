@@ -13,7 +13,7 @@ import type { IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
-const { walkIR, forEachIRChild, identifierBoundParams } = require('./ir-walk.ts');
+const { walkIR, forEachIRChild, forEachLetChild, identifierBoundParams } = require('./ir-walk.ts');
 
 /**
  * Sharing-aware variant of `walkIRScoped` for IDEMPOTENT visitors.
@@ -46,6 +46,10 @@ function walkIRScopedDeduped(
     if (!seen) { seen = new Set(); seenByScope.set(active, seen); }
     if (seen.has(n)) return;
     seen.add(n);
+    if (forEachLetChild(n, active, (child: any, scope: Set<string>) => go(child, scope))) {
+      visit(n, active);
+      return;
+    }
     const bound = identifierBoundParams(n);
     if (bound && n.body) {
       const inner = new Set(active);
@@ -114,6 +118,11 @@ function resolveConstant(
   if (ir.kind === 'lit') {
     if (typeof ir.value === 'number' && Number.isFinite(ir.value)) return ir.value;
     return null;
+  }
+  // A shared intermediate is a `let` name (let-view.ts): fold the expression
+  // with each name read as its value.
+  if (ir.kind === 'call' && ir.op === 'let') {
+    return resolveConstant(require('./let-view.ts').letView(ir).expand(), bindings, seen, fixedValues);
   }
   if (ir.kind === 'const') {
     if (ir.name === 'pi')  return Math.PI;
@@ -385,6 +394,8 @@ function resolveIRToValue(ir: any, bindings: any, fixedValues: any, preserveShap
       if (!(fixedValues && fixedValues.has(name)) && !(b && b.ir)) return;
       Object.defineProperty(env, name, {
         enumerable: true,
+        // A `let` in the expression rebinds a name it shares with a binding.
+        configurable: true,
         get() {
           if (!memo.has(name)) memo.set(name, walk({ kind: 'ref', ns: 'self', name }, seen));
           return memo.get(name);
@@ -511,6 +522,8 @@ const NAMED_SETS: Record<string, any> = {
 
 function parseSetIR(setIR: any, bindings: any, fixedValues?: any) {
   if (!setIR) return null;
+  // A set with shared bounds is a `let` (let-view.ts).
+  if (setIR.kind === 'call' && setIR.op === 'let') setIR = require('./let-view.ts').letView(setIR).top();
   if (setIR.kind === 'const' && NAMED_SETS[setIR.name])
     return NAMED_SETS[setIR.name];
   if (setIR.kind === 'ref' && setIR.ns === 'self' && NAMED_SETS[setIR.name])

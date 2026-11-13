@@ -600,6 +600,9 @@ function _irContainsRef(ir: any, matches: (n: any) => boolean): boolean {
   if (Array.isArray(ir.fields)) {
     for (const f of ir.fields) if (f && _irContainsRef(f.value, matches)) return true;
   }
+  if (Array.isArray(ir.assigns)) {
+    for (const a of ir.assigns) if (a && _irContainsRef(a.value, matches)) return true;
+  }
   if (ir.body && _irContainsRef(ir.body, matches)) return true;
   if (Array.isArray(ir.branches)) {
     for (const b of ir.branches) if (_irContainsRef(b, matches)) return true;
@@ -814,12 +817,19 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
  * marks the LADJ of the whole map, which a broadcast on the path gives.
  */
 function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): { inverseIR: any, ladjIR: any, wholeMap: boolean } | null {
-  const { outputExpr, freeRef, outputValue } = spec;
+  const { freeRef, outputValue } = spec;
   const matches: (n: any) => boolean = typeof freeRef === 'function'
     ? freeRef
     : (n: any) => !!(n && n.kind === 'ref' && n.name === freeRef.name
         && (freeRef.ns == null || n.ns === freeRef.ns));
-  if (!_irContainsRef(outputExpr, matches)) return null;
+  // A shared intermediate is a `let` name (let-view.ts). The path reads
+  // through it, a frozen argument is matched as its value, and the inverse
+  // and LADJ are closed over the assigns they read.
+  const view = require('./let-view.ts').letView(spec.outputExpr);
+  const R = view.resolve;
+  const contains = view.mentions((n: any) => _irContainsRef(n, matches));
+  const outputExpr = R(view.ir);
+  if (!contains(outputExpr)) return null;
 
   // 1. Trace the straight-line path output→leaf. At each node exactly
   //    one argument may contain the free variable (the on-path arg);
@@ -831,16 +841,17 @@ function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): 
     if (cur.kind !== 'call' || !Array.isArray(cur.args)) return null;
     let onPathIdx = -1;
     for (let i = 0; i < cur.args.length; i++) {
-      if (_irContainsRef(cur.args[i], matches)) {
+      if (contains(cur.args[i])) {
         if (onPathIdx !== -1) return null;   // free var in >1 arg
         onPathIdx = i;
       }
     }
     if (onPathIdx === -1) return null;
-    const cell = cur.op === 'broadcast' ? _invertBroadcastCell(cur, onPathIdx) : null;
-    if (!cell && !ELEMENTARY_BIJECTIONS[cur.op]) return null;   // op not invertible
-    path.push({ node: cur, onPathIdx, cell });
-    cur = cur.args[onPathIdx];
+    const node = { ...cur, args: cur.args.map((a: any, i: number) => (i === onPathIdx ? a : R(a))) };
+    const cell = node.op === 'broadcast' ? _invertBroadcastCell(node, onPathIdx) : null;
+    if (!cell && !ELEMENTARY_BIJECTIONS[node.op]) return null;   // op not invertible
+    path.push({ node, onPathIdx, cell });
+    cur = R(cur.args[onPathIdx]);
   }
   // Identity: outputExpr IS the free ref.
   if (path.length === 0) return { inverseIR: outputValue, ladjIR: _lit(0), wholeMap: false };
@@ -876,7 +887,7 @@ function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): 
   }
   const ladjIR = terms.reduce((acc: any, t: any) => acc == null ? t : _call('add', [acc, t]), null);
 
-  return { inverseIR: Y, ladjIR, wholeMap };
+  return { inverseIR: view.close(Y), ladjIR: view.close(ladjIR), wholeMap };
 }
 
 let _freshCounter = 0;

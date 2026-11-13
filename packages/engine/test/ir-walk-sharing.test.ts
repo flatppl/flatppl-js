@@ -57,6 +57,18 @@ function ctxOf(bindingIRs: Record<string, any>) {
 
 // Distinct objects vs. positions, so a claim about sharing is measured
 // rather than asserted.
+function hasLet(root: any): boolean {
+  let found = false;
+  const seen = new Set<any>();
+  (function go(n: any) {
+    if (found || !n || typeof n !== 'object' || seen.has(n)) return;
+    seen.add(n);
+    if (n.kind === 'call' && n.op === 'let') { found = true; return; }
+    irWalk.forEachIRChild(n, go);
+  })(root);
+  return found;
+}
+
 function sizes(root: any) {
   const distinct = new Set<any>();
   let positions = 0;
@@ -323,18 +335,18 @@ test('Dalitz amplitude: the density is bit-identical to the pre-fix value', asyn
     + Math.log(w.samples[0]));
 });
 
-test('Dalitz amplitude: the walk receives a DAG and keeps it one', async () => {
-  // The measurement behind the change, asserted rather than recorded in
-  // a comment: the body handed to inlineBoundaryDerivations is ~50x
-  // shared, and the output stays about as compact as the input. Pre-fix
-  // the output was ~42k objects — larger than the input's position
-  // count — so a wide margin here still fails loudly on a regression.
+test('Dalitz amplitude: the walk receives a let graph and keeps it compact', async () => {
+  // The measurement behind the change, asserted rather than recorded in a
+  // comment. The amplitude weight reaches inlineBoundaryDerivations as a `let`
+  // graph that names each shared binding once, and the walk keeps it about as
+  // compact as its input. Before the sharing-preserving walk, one output was
+  // ~42k objects, so the bounds below still fail loudly on a regression.
   const matShared = require('../materialiser-shared.ts');
   const orig = matShared.inlineBoundaryDerivations;
   const log: any[] = [];
-  matShared.inlineBoundaryDerivations = function (ir: any, bs: any, c: any) {
-    const out = orig.call(this, ir, bs, c);
-    log.push({ inp: sizes(ir), out: sizes(out) });
+  matShared.inlineBoundaryDerivations = function (ir: any, bs: any, c: any, o: any) {
+    const out = orig.call(this, ir, bs, c, o);
+    log.push({ hasLet: hasLet(ir), inp: sizes(ir), out: sizes(out) });
     return out;
   };
   try {
@@ -345,16 +357,16 @@ test('Dalitz amplitude: the walk receives a DAG and keeps it one', async () => {
     matShared.inlineBoundaryDerivations = orig;
   }
 
-  const wide = log.filter((e) => e.inp.positions > 10000);
-  assert.ok(wide.length > 0,
-    'the density path no longer walks a wide body; sizes seen: '
-    + JSON.stringify(log.map((e) => e.inp)));
-  for (const e of wide) {
-    assert.ok(e.inp.positions / e.inp.distinct > 20,
-      'the input stopped being a DAG: ' + e.inp.positions + ' positions over '
-      + e.inp.distinct + ' objects');
+  const graphs = log.filter((e) => e.hasLet && e.inp.distinct > 500);
+  assert.ok(graphs.length > 0,
+    'the density path no longer walks the amplitude let graph; walks seen: '
+    + JSON.stringify(log.map((e) => ({ hasLet: e.hasLet, ...e.inp }))));
+  for (const e of graphs) {
     assert.ok(e.out.distinct < e.inp.distinct * 4,
       'the walk un-shared its input: ' + e.inp.distinct + ' objects in, '
       + e.out.distinct + ' out');
+  }
+  for (const e of log) {
+    assert.ok(e.out.distinct < 10000, 'a walk output grew to ' + e.out.distinct + ' objects');
   }
 });

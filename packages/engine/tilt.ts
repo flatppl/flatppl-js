@@ -12,7 +12,8 @@ function exactLaw(ir: any, resolveValue?: (ir: any) => any): any {
   const [m, b] = ir.args;
   if (b?.op !== 'Lebesgue') return null;
   const fixed = (x: any) => x?.kind === 'lit' ? x.value : resolveValue?.(x);
-  const support = b.kwargs?.support || b.args?.[0];
+  // A support with shared bounds is a `let` (let-view.ts).
+  const support = require('./let-view.ts').letView(b.kwargs?.support || b.args?.[0]).top();
   const set = b.vectorSet?.set || support?.op;
   if (set !== 'ordered' && set !== 'zerosum') return null;
   const n = b.vectorSet?.n ?? fixed(support?.args?.[0]);

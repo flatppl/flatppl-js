@@ -476,6 +476,79 @@ function liftInlineSubexpressions(bindings: any) {
   function makeIdent(name: string, loc: any) {
     return { type: 'Identifier', name, loc: loc || null };
   }
+  // A synthetic binding for a shared call argument. Its own counter keeps the
+  // `__anon` numbering of every other lifted subexpression unchanged.
+  let sharedCounter = 0;
+  const sharedArgNames = new Map<string, string>();
+  function freshSharedName() {
+    let n;
+    do { n = '__arg' + (sharedCounter++); } while (out.has(n) || bindings.has(n));
+    return n;
+  }
+
+  // How often each substitution key of `sub` is read in `asts`: an
+  // identifier, or a placeholder under its sentinel key. A nested
+  // reification that rebinds the name hides it below.
+  function _readCounts(asts: any[], sub: any): Map<string, number> {
+    const counts = new Map<string, number>();
+    const walk = (node: any, hidden: Set<string>) => {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach((c: any) => walk(c, hidden)); return; }
+      const key = node.type === 'Identifier' ? node.name
+        : node.type === 'Placeholder' ? PLACEHOLDER_SUB_PREFIX + node.name : null;
+      if (key != null && key in sub && !hidden.has(key)) { counts.set(key, (counts.get(key) || 0) + 1); return; }
+      const inner = _reificationBoundaryNames(node);
+      let scope = hidden;
+      if (inner) {
+        scope = new Set(hidden);
+        for (const nm of inner.identifiers) scope.add(nm);
+        for (const nm of inner.placeholders) scope.add(PLACEHOLDER_SUB_PREFIX + nm);
+      }
+      for (const k in node) if (k !== 'loc') walk(node[k], scope);
+    };
+    for (const a of asts) walk(a, new Set());
+    return counts;
+  }
+
+  // A literal, a constant, a set name or a name: a copy evaluates nothing
+  // twice. A negated number lowers to a literal too.
+  function _isLeafAst(ast: any): boolean {
+    if (!ast) return true;
+    if (['NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ConstantRef', 'SetRef', 'Identifier',
+      'Placeholder', 'Hole'].includes(ast.type)) return true;
+    return ast.type === 'UnaryExpr' && ast.op === '-' && ast.operand?.type === 'NumberLiteral';
+  }
+
+  // Does `ast` read only module bindings? A placeholder, a hole, an input
+  // leaf (`elementof`, the inputs of a reified function) or a name with no
+  // module binding (a function's own input) is an input of an enclosing
+  // function, which a module-scope binding cannot read.
+  function _isClosedAst(ast: any): boolean {
+    let closed = true;
+    const walk = (node: any, hidden: Set<string>) => {
+      if (!closed || node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach((c: any) => walk(c, hidden)); return; }
+      if (node.type === 'Placeholder' || node.type === 'Hole') { if (!hidden.has(node.name)) closed = false; return; }
+      if (node.type === 'Identifier') {
+        if (hidden.has(node.name)) return;
+        const b = out.get(node.name) || bindings.get(node.name);
+        if (b ? (b.type === 'elementof' || b.type === 'external') : !ALL_KNOWN.has(node.name)) closed = false;
+        return;
+      }
+      if (node.type === 'KeywordArg') { walk(node.value, hidden); return; }
+      if (node.type === 'FieldAccess') { walk(node.object, hidden); return; }
+      if (node.type === 'CallExpr' && node.callee?.type === 'Identifier') {
+        const inner = _reificationBoundaryNames(node);
+        const scope = inner ? new Set([...hidden, ...inner.identifiers, ...inner.placeholders]) : hidden;
+        (node.args || []).forEach((a: any) => walk(a, scope));
+        return;
+      }
+      for (const k in node) if (k !== 'loc') walk(node[k], hidden);
+    };
+    walk(ast, new Set());
+    return closed;
+  }
+
   function makeSyntheticBinding(name: string, ast: any) {
     const constructor = measureConstructors.get(ast);
     return {
@@ -4352,6 +4425,36 @@ function liftInlineSubexpressions(bindings: any) {
     for (const k in argMap) boundaries.add(k);
 
     const closure = computeClosure(bodyAst, boundaries);
+
+    // Each argument is evaluated once (the engine's read-count rule, as for
+    // the IR `let`). One that the body reads two or more times, and that is
+    // not a leaf, becomes a synthetic binding the reads name, rather than a
+    // copy at each read. It moves to module scope only when it reads no input
+    // of an enclosing function. Otherwise the call stays a call, and the IR
+    // inliner binds that argument once in a `let`.
+    if (fnBinding.type === 'functionof' || fnBinding.type === 'kernelof') {
+      const reads = _readCounts([bodyAst, ...Array.from(closure, (nm: string) => {
+        const b = out.get(nm) || bindings.get(nm);
+        return b && b.node && b.node.value;
+      })], argMap);
+      const shared = Object.keys(argMap).filter((key) => (reads.get(key) || 0) >= 2 && !_isLeafAst(argMap[key]));
+      if (shared.some((key) => !_isClosedAst(argMap[key]))) return astArg;
+      for (const key of shared) {
+        const arg = argMap[key];
+        // One binding per distinct argument: an application inlined twice
+        // (once in a pass whose result is discarded) names the same one.
+        const shape = JSON.stringify(arg, (k, v) => (k === 'loc' ? undefined : v));
+        let fresh = sharedArgNames.get(shape);
+        if (!fresh || !out.has(fresh)) {
+          fresh = freshSharedName();
+          const value = inlineUserCall(cloneAst(arg));
+          visit(value);
+          out.set(fresh, makeSyntheticBinding(fresh, value));
+          sharedArgNames.set(shape, fresh);
+        }
+        argMap[key] = makeIdent(fresh, arg.loc);
+      }
+    }
 
     // Allocate fresh synthetic names per closure binding and add
     // them to the substitution map. We use freshName() here so

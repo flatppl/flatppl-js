@@ -621,7 +621,7 @@ function _opaque(node: any): any {
     const callEnv = separateScope && env
       && Object.prototype.hasOwnProperty.call(env, '__bodyEval')
       && typeof env.__bodyEval === 'function'
-      ? Object.assign({}, env, { __bodyEval: undefined }) : env;
+      ? require('./sampler.ts').copyEnv(env, { __bodyEval: undefined }) : env;
     return _evaluateCall(node, callEnv);
   };
 }

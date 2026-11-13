@@ -188,7 +188,8 @@ const INTERVAL_SETS: Record<string, [number, number]> = {
 // `evaluate` (an IR → number function), or null for an untruncated component.
 function componentBounds(c: any, evaluate: (ir: any) => number): [number, number] | null {
   if (!c.setIR) return null;
-  const S = c.setIR;
+  // A set with shared bounds is a `let` (let-view.ts).
+  const S = require('./let-view.ts').letView(c.setIR).top();
   const named = S.kind === 'const' ? INTERVAL_SETS[S.name] : undefined;
   if (named) return named;
   if (!(S.kind === 'call' && S.op === 'interval' && S.args?.length === 2)) {
@@ -203,7 +204,7 @@ function componentBounds(c: any, evaluate: (ir: any) => number): [number, number
 // for any other shape. `S` is an interval or a predefined interval set.
 function lebesgueSupport(leafIR: any, evaluate: (ir: any) => number): [number, number] | null {
   if (!leafIR || leafIR.op !== 'Lebesgue') return null;
-  const S = (leafIR.kwargs && leafIR.kwargs.support) || (leafIR.args && leafIR.args[0]);
+  const S = require('./let-view.ts').letView((leafIR.kwargs && leafIR.kwargs.support) || (leafIR.args && leafIR.args[0])).top();
   if (S && S.kind === 'const' && INTERVAL_SETS[S.name]) return INTERVAL_SETS[S.name];
   if (S && S.kind === 'call' && S.op === 'interval' && S.args?.length === 2) {
     return [+evaluate(S.args[0]), +evaluate(S.args[1])];

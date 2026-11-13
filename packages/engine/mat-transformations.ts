@@ -301,8 +301,11 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     // the module's decoupled `x` draw), silently transforming the
     // wrong atoms (the audit-§3 boundary-conflation, on pushfwd's
     // sample side).
+    // The worker has no function bindings, so user calls in the body are
+    // bound in place as `let`s, as a weight body's are.
     const paramSet = new Set<string>(fnInfo.params);
-    const body = inlineBoundaryDerivations(fnInfo.body, paramSet, ctx);
+    const body = derivations.inlineUserCalls(
+      inlineBoundaryDerivations(fnInfo.body, paramSet, ctx, { letForm: true }), ctx.bindings);
     // Bind the param(s) to the base variate per spec §04 application:
     //   - single param, scalar base   → the sample column;
     //   - single param, record base   → per-atom records (the same
@@ -369,18 +372,26 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         ...(ctx._boundaryNames || []), ...fnInfo.params,
       ]),
     });
-    if (body.kind === 'call' && body.op === 'record' && body.fields) {
-      return Promise.all(body.fields.map((field: any) =>
-        collectRefArrays(field.value, fedCtx, parameterMeasures).then((refs: any) => ctx.sendWorker({
-          type: 'evaluateN', ir: field.value, count: N,
-          refArrays: Object.assign({}, refs, paramBind),
-        })).then((reply: any) => [field.name, measureFromReply(reply, N, {
-          logWeights: M.logWeights, logTotalmass: M.logTotalmass, n_eff: M.n_eff,
-        })]),
-      )).then((fields: any[]) => shared.withParameterWeights(Object.assign(
-        empirical.recordMeasure(Object.fromEntries(fields), M.logWeights),
-        { logTotalmass: shared.massOf(M), n_eff: M.n_eff },
-      ), parameterMeasures));
+    // A record-valued body, under its leading `let`s, replies one result per
+    // field from a single evaluation: the lets are evaluated once and every
+    // field reads them.
+    let root = body;
+    while (root && root.kind === 'call' && root.op === 'let') root = root.body;
+    if (root && root.kind === 'call' && root.op === 'record' && root.fields) {
+      return collectRefArrays(body, fedCtx, parameterMeasures).then((refs: any) => ctx.sendWorker({
+        type: 'evaluateN', ir: body, count: N, refArrays: Object.assign({}, refs, paramBind),
+      })).then((reply: any) => {
+        const fields: any = {};
+        for (const name of Object.keys(reply.fields)) {
+          fields[name] = measureFromReply(reply.fields[name], N, {
+            logWeights: M.logWeights, logTotalmass: M.logTotalmass, n_eff: M.n_eff,
+          });
+        }
+        return shared.withParameterWeights(Object.assign(
+          empirical.recordMeasure(fields, M.logWeights),
+          { logTotalmass: shared.massOf(M), n_eff: M.n_eff },
+        ), parameterMeasures);
+      });
     }
     return collectRefArrays(body, fedCtx, parameterMeasures).then((bodyRefs: any) => ctx.sendWorker({
       type: 'evaluateN',

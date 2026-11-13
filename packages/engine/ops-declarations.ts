@@ -1307,7 +1307,7 @@ function _reduceLogical(ir: any, ctx: any): any {
   if (xs.length === 0) {
     throw new Error('reduce: empty vector has no initial value');
   }
-  const elemEnv = Object.assign({}, ctx.env);
+  const elemEnv = require('./sampler.ts').copyEnv(ctx.env);
   if (irArgs.length === 3) elemEnv[fn.params[2]] = ctx.evaluateExpr(irArgs[2], ctx.env);
   let acc: any = xs[0];
   for (let i = 1; i < xs.length; i++) {
@@ -1404,7 +1404,7 @@ function _scanLogical(ir: any, ctx: any): any {
     plan = require('./sampler-profile-compile.ts').compileProfileBody(fn.body);
     scanPlans.set(fn.body, plan);
   }
-  const elemEnv = Object.assign({}, ctx.env, { __bodyEval: plan.bodyEval });
+  const elemEnv = require('./sampler.ts').copyEnv(ctx.env, { __bodyEval: plan.bodyEval });
   try {
     let acc = init;
     for (let i = 0; i < n; i++) {
@@ -1462,7 +1462,7 @@ function _filterLogical(ir: any, ctx: any): any {
       + (data === null ? 'null' : typeof data) + ')');
   }
   const n = isTable ? data.nrows : isValue ? data.shape[0] : data.length;
-  const elemEnv = Object.assign({}, ctx.env);
+  const elemEnv = require('./sampler.ts').copyEnv(ctx.env);
   for (const { param, value } of _callbackParameter('filter', fn, 1, ir, 2, ctx)) elemEnv[param] = value;
   const kept: any[] = [];
   for (let i = 0; i < n; i++) {

@@ -821,6 +821,44 @@ function _compilePlanCached(ir: any, perAtom: Set<string>): any {
   return plan;
 }
 
+// Evaluate `let` assigns once over the batch, in order. One that reads a
+// per-atom value is evaluated batched and joins refArrays; any other is one
+// value for every atom, evaluated once by the scalar interpreter (as
+// _perAtomFallback does), and joins the overlay. A later name shadows an
+// earlier.
+function _letScopeN(assigns: any[], refArrays: any, N: any, baseEnv: any, overlay: any) {
+  const refs: any = Object.assign({}, refArrays);
+  const over: any = Object.assign({}, overlay);
+  for (const a of assigns || []) {
+    if (_touchesAtomRef(a.value, refs, over)) {
+      refs[a.name] = _evalN(a.value, refs, N, baseEnv, over);
+      delete over[a.name];
+    } else {
+      over[a.name] = evaluateExpr(a.value, Object.assign(Object.create(baseEnv ?? null), over));
+      delete refs[a.name];
+    }
+  }
+  return { refs, over };
+}
+
+// A record-valued IR, with any leading `let`s, as one batched result per
+// field. The lets are evaluated once and every field reads them. Null when
+// the IR is not a record under lets.
+function evaluateFieldsN(ir: any, refArrays: any, count: any, baseEnv: any) {
+  const N = count | 0;
+  const assigns: any[] = [];
+  let root = ir;
+  while (root && root.kind === 'call' && root.op === 'let') {
+    assigns.push(...(root.assigns || []));
+    root = root.body;
+  }
+  if (!root || root.kind !== 'call' || root.op !== 'record' || !Array.isArray(root.fields)) return null;
+  const scope = _letScopeN(assigns, refArrays || null, N, baseEnv || {}, null);
+  const out: Record<string, any> = {};
+  for (const f of root.fields) out[f.name] = _evalN(f.value, scope.refs, N, baseEnv || {}, scope.over);
+  return out;
+}
+
 function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   switch (ir.kind) {
     case 'lit':
@@ -842,6 +880,16 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
     }
     case 'call': {
       const op = ir.op;
+      // A binding graph (sampler.ts `_evaluateLet`): each assign is evaluated
+      // once over the batch. A per-atom result joins refArrays, an
+      // atom-independent one the overlay, and a later name shadows an earlier.
+      if (op === 'let') {
+        if (!_touchesAtomRef(ir, refArrays, overlay)) {
+          return evaluateExpr(ir, Object.assign({}, baseEnv, overlay));
+        }
+        const scope = _letScopeN(ir.assigns, refArrays, N, baseEnv, overlay);
+        return _evalN(ir.body, scope.refs, N, baseEnv, scope.over);
+      }
       // Scalar-batched dispatch.
       if (op in ARITH_OPS_N) {
         const args = (ir.args || []).map((a: any) => _evalN(a, refArrays, N, baseEnv, overlay));
@@ -1469,6 +1517,7 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
 
 module.exports = {
   evaluateExprN,
+  evaluateFieldsN,
   _evalN,
   _batchedApproximation,
   _perAtomFallback,

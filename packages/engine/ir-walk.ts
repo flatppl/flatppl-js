@@ -354,6 +354,18 @@ function mapIRScoped(
 ): any {
   const active = shadowed || new Set<string>();
   if (!node || typeof node !== 'object') return transform(node, active);
+  if (node.kind === 'call' && node.op === 'let') {
+    const assigns: any[] = [];
+    let body = node.body;
+    let changed = false;
+    forEachLetChild(node, active, (child, scope, isBody) => {
+      const mapped = mapIRScoped(child, transform, scope);
+      if (mapped !== child) changed = true;
+      if (isBody) body = mapped;
+      else assigns.push({ ...node.assigns[assigns.length], value: mapped });
+    });
+    return transform(changed ? { ...node, assigns, body } : node, active);
+  }
   const bound = identifierBoundParams(node);
   let inner = active;
   if (bound && node.body) {
@@ -379,6 +391,24 @@ function mapIRScoped(
  * contributes nothing. Returns null when there is nothing to shadow —
  * callers can skip allocating an extended shadow set.
  */
+/**
+ * Visit each IR child of a `let` node under its scope: assign i sees the
+ * names of assigns 0..i-1, the body sees every name. Returns false for any
+ * other node so the caller walks it as before.
+ */
+function forEachLetChild(node: any, active: Set<string>,
+    visit: (child: any, scope: Set<string>, isBody: boolean) => void): boolean {
+  if (!node || node.kind !== 'call' || node.op !== 'let') return false;
+  let scope = active;
+  for (const a of node.assigns || []) {
+    if (a && a.value) visit(a.value, scope, false);
+    scope = new Set(scope);
+    scope.add(a.name);
+  }
+  if (node.body) visit(node.body, scope, true);
+  return true;
+}
+
 function identifierBoundParams(node: any): string[] | null {
   if (!node || node.kind !== 'call'
       || (node.op !== 'functionof' && node.op !== 'kernelof')
@@ -416,6 +446,10 @@ function walkIRScoped(
 ): void {
   const active = shadowed || new Set<string>();
   if (!node || typeof node !== 'object') return;
+  if (forEachLetChild(node, active, (child, scope) => walkIRScoped(child, visit, scope))) {
+    visit(node, active);
+    return;
+  }
   const bound = identifierBoundParams(node);
   if (bound && node.body) {
     // Children other than `body` (a reified node carries none today,
@@ -435,6 +469,9 @@ function walkIRScoped(
 
 module.exports = {
   forEachIRChild,
+  forEachLetChild,
+  // One level: `node` with each IR child replaced by `map(child)`.
+  mapIRChildren: (node: any, map: (c: any) => any) => _mapChildren(node, (c: any) => map(c)),
   walkIR,
   walkIRScoped,
   identifierBoundParams,

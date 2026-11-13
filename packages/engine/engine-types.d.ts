@@ -225,7 +225,19 @@ export interface IRCall extends IRBase {
   axisStack?: AxisStack;
 }
 
-export type IRNode = IRLit | IRConst | IRRef | IRHole | IRAxis | IRCall;
+/**
+ * Engine-internal binding graph. Each assign is evaluated once, in order;
+ * later assigns and the body read it by name. Function bodies take this form
+ * so a binding read many times is evaluated once. Never part of FlatPIR.
+ */
+export interface IRLet extends IRBase {
+  kind: 'call';
+  op: 'let';
+  assigns: Array<{ name: string; value: IRNode }>;
+  body: IRNode;
+}
+
+export type IRNode = IRLit | IRConst | IRRef | IRHole | IRAxis | IRCall | IRLet;
 
 // ---------------------------------------------------------------------
 // Derivation kinds (engine/derivations.ts → buildDerivations output)

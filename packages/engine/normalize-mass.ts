@@ -22,7 +22,7 @@ function canDeferTruncateNormalizer(inner: any): boolean {
   if (affine && !hasCdf) return false;
   // A discrete base's mass is a sum over the atoms in S (density.ts).
   if (!hasCdf && !sampler.lookupDistribution(base).discrete) return false;
-  const set = inner.args[1];
+  const set = require('./let-view.ts').topOf(inner.args[1]);
   return set?.kind === 'call' && set.op === 'interval' && set.args?.length === 2
     || (set?.kind === 'const' || set?.kind === 'ref' && set.ns === 'self')
       && ['reals', 'posreals', 'nonnegreals'].includes(set.name);
@@ -35,18 +35,22 @@ function scalarAffinePushfwd(ir: any): { leaf: any; shift: any; scale: any } | n
   if (ir?.kind !== 'call' || ir.args?.length !== (ir.op === 'locscale' ? 3 : 2)) return null;
   if (ir.op === 'locscale') return { leaf: ir.args[0], shift: ir.args[1], scale: ir.args[2] };
   const forward = ir.op === 'pushfwd' ? ir.bijection?.fForward : null;
-  const body = forward?.body;
+  if (!forward?.body) return null;
+  // A shared intermediate of the map is a `let` name (let-view.ts).
+  const view = require('./let-view.ts').letView(forward.body);
+  const body = view.resolve(view.ir);
   if (body?.kind !== 'call' || body.op !== 'add' || body.args?.length !== 2) return null;
-  const [product, shift] = body.args;
+  const product = view.resolve(body.args[0]), shift = body.args[1];
   if (product?.kind !== 'call' || product.op !== 'mul' || product.args?.length !== 2) return null;
-  const [scale, point] = product.args;
+  const scale = product.args[0], point = view.resolve(product.args[1]);
   const { walkIR } = require('./ir-walk.ts');
-  let usesPoint = false;
-  walkIR({ args: [scale, shift] }, (n: any) => {
-    if (n.kind === 'ref' && n.name === forward.paramName) usesPoint = true;
+  const readsPoint = view.mentions((n: any) => {
+    let found = false;
+    walkIR(n, (m: any) => { if (m.kind === 'ref' && m.name === forward.paramName) found = true; });
+    return found;
   });
-  if (point?.kind !== 'ref' || point.name !== forward.paramName || usesPoint) return null;
-  return { leaf: ir.args[1], shift, scale };
+  if (point?.kind !== 'ref' || point.name !== forward.paramName || readsPoint(scale) || readsPoint(shift)) return null;
+  return { leaf: ir.args[1], shift: view.close(shift), scale: view.close(scale) };
 }
 
 // The preimage of [lo, hi] under x -> scale * x + shift. A negative scale
@@ -248,7 +252,7 @@ function iidCount(ir: any): number | null {
 // Keep live parameters and expm1: small positive masses must not round to zero.
 function positiveCountLogMassExpr(ir: any): any | null {
   if (ir.op !== 'truncate' || ir.args?.length !== 2) return null;
-  const [base, set] = ir.args;
+  const base = ir.args[0], set = require('./let-view.ts').topOf(ir.args[1]);
   if (!['Poisson', 'NegativeBinomial'].includes(base?.op)
       || set?.op !== 'interval' || set.args?.length !== 2) return null;
   const { resolveConstant } = require('./ir-shared.ts');
@@ -293,6 +297,7 @@ function truncateMassLit(baseIR: any, setIR: any): any | null {
   // that function THROWS for a record-form cartprod and above its dimension
   // cap, and a throw here would turn a shape that samples today into a
   // refusal. An N-D truncation is a Lebesgue-box mass, not a CDF difference.
+  setIR = require('./let-view.ts').topOf(setIR);
   if (!setIR || setIR.kind !== 'call' || setIR.op !== 'interval') return null;
   // Required lazily: mat-density requires this module at load time.
   const { parseTruncationBox } = require('./mat-density.ts');
@@ -354,7 +359,7 @@ function constantLeafParams(ir: any): { kernel: string; input: Record<string, nu
   // CDF row reads `lo`/`hi`. Map it here so a truncated Uniform is not the one
   // hole in this arm's accepted set.
   if (ir.op === 'Uniform') {
-    const sup = bound.paramIRs[0];
+    const sup = require('./let-view.ts').topOf(bound.paramIRs[0]);
     if (!sup || sup.kind !== 'call' || sup.op !== 'interval'
         || !Array.isArray(sup.args) || sup.args.length !== 2) return null;
     const lo = num(sup.args[0]);

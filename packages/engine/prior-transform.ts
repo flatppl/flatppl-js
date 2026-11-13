@@ -70,7 +70,7 @@ function resolveParams(distOp: string, node: any, env: Record<string, any>): any
   // Uniform's sole parameter is a support set (§08), including when it is
   // nested under truncate. Its quantile/CDF helpers consume the endpoints.
   if (distOp === 'Uniform') {
-    const support = node.kwargs?.support ?? node.args?.[0];
+    const support = require('./let-view.ts').topOf(node.kwargs?.support ?? node.args?.[0]);
     if (support?.kind !== 'call' || support.op !== 'interval') {
       throw new Error('prior-transform: Uniform expects interval(lo,hi) support');
     }
@@ -232,7 +232,7 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
   }
   if (op === 'truncate') {
     const D = measureIR.args[0];
-    const region = measureIR.args[1];
+    const region = require('./let-view.ts').topOf(measureIR.args[1]);
     if (!D || D.kind !== 'call' || !ARG_NAMES[D.op]) throw new Error(`prior-transform: truncate base '${D && D.op}' unsupported`);
     if (!region || region.kind !== 'call' || region.op !== 'interval') throw new Error('prior-transform: truncate region must be interval(lo,hi)');
     return {

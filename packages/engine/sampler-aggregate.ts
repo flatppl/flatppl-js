@@ -1260,45 +1260,90 @@ function _broadcastUnary(
 //   - true constants (atom-indep, no axis refs) → singleton tensor;
 //   - direct atom-batched refs to per-atom rank-1 [N] values (only
 //     reachable when atomCfg != null) → atom-axis-stretched tensor.
+// The `let` names in scope inside an aggregate body (a user call's
+// arguments). A name whose value varies over an axis or an atom is an
+// aligned tensor. Any other is one value, passed to a constant subtree as a
+// literal assign.
+type LiftLets = { tensors: Map<string, { data: Float64Array; shape: number[] }>; consts: any[] };
+
+function _readsTensorLet(node: any, lets: LiftLets | undefined): boolean {
+  if (!lets || lets.tensors.size === 0) return false;
+  const seen = new Set<any>();
+  const go = (n: any): boolean => {
+    if (!n || typeof n !== 'object' || seen.has(n)) return false;
+    seen.add(n);
+    if (Array.isArray(n)) return n.some(go);
+    if (n.kind === 'ref') return lets.tensors.has(n.name);
+    for (const k in n) if (k !== 'loc' && k !== 'meta' && go(n[k])) return true;
+    return false;
+  };
+  return go(node);
+}
+
 function _liftAggregateExpr(
   node: any, canonicalAxes: string[],
   axisLengths: Record<string, number>, env: any,
   atomCfg: AtomConfig,
   axisRefs?: WeakMap<object, boolean>,
+  lets?: LiftLets,
 ): { data: Float64Array; shape: number[] } {
+  if (lets && node.kind === 'ref' && lets.tensors.has(node.name)) return lets.tensors.get(node.name)!;
   // Constant-hoist: subtree with no axis refs evaluates once.
-  if (!_containsAxisRef(node, axisRefs)) {
+  if (!_containsAxisRef(node, axisRefs) && !_readsTensorLet(node, lets)) {
     // A subtree reading a per-atom name (`exp(mu)`) holds one value per
     // atom: the single-point evaluator would apply `exp` to the whole
     // [N] column. A bare per-atom ref is its own column already.
     const perAtom = atomCfg && node.kind !== 'ref' && _readsAtomBatched(node, atomCfg.atomBatchedNames);
-    const v = perAtom ? atomCfg!.evalPerAtom(node) : evaluateExpr(node, env);
+    const closed = lets && lets.consts.length ? { kind: 'call', op: 'let', assigns: lets.consts, body: node } : node;
+    const v = perAtom ? atomCfg!.evalPerAtom(closed) : evaluateExpr(closed, env);
     return _alignedConstTensor(v, node, canonicalAxes, atomCfg);
+  }
+  // A `let` in the body: each assign is evaluated once, in order.
+  if (node.kind === 'call' && node.op === 'let') {
+    const inner: LiftLets = { tensors: new Map(lets ? lets.tensors : []), consts: lets ? lets.consts.slice() : [] };
+    for (const a of node.assigns) {
+      inner.tensors.delete(a.name);
+      inner.consts = inner.consts.filter((c: any) => c.name !== a.name);
+      const varies = _containsAxisRef(a.value, axisRefs) || _readsTensorLet(a.value, inner)
+        || (atomCfg && _readsAtomBatched(a.value, atomCfg.atomBatchedNames));
+      if (varies) {
+        inner.tensors.set(a.name, _liftAggregateExpr(a.value, canonicalAxes, axisLengths, env, atomCfg, axisRefs, inner));
+      } else {
+        const closed = inner.consts.length ? { kind: 'call', op: 'let', assigns: inner.consts, body: a.value } : a.value;
+        inner.consts.push({ name: a.name, value: { kind: 'lit', value: evaluateExpr(closed, env) } });
+      }
+    }
+    return _liftAggregateExpr(node.body, canonicalAxes, axisLengths, env, atomCfg, axisRefs, inner);
   }
   // `get` / `get0`: produces an aligned tensor at this leaf.
   if (node.kind === 'call' && (node.op === 'get' || node.op === 'get0')) {
-    return _alignedTensorFromGet(node, canonicalAxes, axisLengths, env, atomCfg);
+    // A container that reads a constant let name (`x.mu[.k]` for a formal
+    // x) is evaluated under those assigns.
+    const getNode = lets && lets.consts.length
+      ? { ...node, args: [{ kind: 'call', op: 'let', assigns: lets.consts, body: node.args[0] }, ...node.args.slice(1)] }
+      : node;
+    return _alignedTensorFromGet(getNode, canonicalAxes, axisLengths, env, atomCfg);
   }
   // Binary arithmetic: lift both operands, broadcast-apply.
   if (node.kind === 'call' && node.args && node.args.length === 2) {
     const fn = _AGG_BIN[node.op];
     if (fn) {
-      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
-      const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
+      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets);
+      const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets);
       return _broadcastBinary(a, b, fn);
     }
   }
   // §07 ifelse is elementwise: select a or b per cell by the condition.
   if (node.kind === 'call' && node.op === 'ifelse' && node.args?.length === 3) {
     const [c, a, b] = node.args.map((arg: any) =>
-      _liftAggregateExpr(arg, canonicalAxes, axisLengths, env, atomCfg, axisRefs));
+      _liftAggregateExpr(arg, canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets));
     return _broadcastSelect(c, a, b);
   }
   // Unary scalar math.
   if (node.kind === 'call' && node.args && node.args.length === 1) {
     const fn = _AGG_UN[node.op];
     if (fn) {
-      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
+      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets);
       return _broadcastUnary(a, fn);
     }
   }

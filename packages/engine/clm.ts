@@ -595,7 +595,7 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
     // number for `logdensityof(lawof(record(...)), point)` whose boundary
     // set is empty). With no derived value bindings this is a no-op, so
     // body === expandMeasure(name) for the green-fixture shapes.
-    body = shared.inlineBoundaryDerivations(expanded, cut, ctx);
+    body = shared.inlineBoundaryDerivations(expanded, cut, ctx, { valueLets: true });
   }
   if (applied) body = _bindAppliedBoundaries(body, applied, mc, ctx);
 

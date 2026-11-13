@@ -965,15 +965,19 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
   const sampler = require('./sampler.ts');
   const { intervalProbability } = require('./forward-cdf.ts');
   const { walkIR } = require('./ir-walk.ts');
-  const mentions = (n: any) => {
+  // A shared intermediate is a `let` name (let-view.ts): each match point
+  // reads through it, and an expression taken out is closed over its assigns.
+  const view = require('./let-view.ts').letView(body);
+  const R = view.resolve, C = view.close;
+  const mentions = view.mentions((n: any) => {
     let found = false;
     walkIR(n, (x: any) => { if (x.kind === 'ref' && x.name === param) found = true; });
     return found;
-  };
+  });
   const lit = (value: number) => ({ kind: 'lit', value });
   const call = (op: string, ...args: any[]) => ({ kind: 'call', op, args });
-  const scalar = (n: any) => +sampler.evaluateExpr(n, env);
-  let exponent = body, scale = 0;
+  const scalar = (n: any) => +sampler.evaluateExpr(C(n), env);
+  let exponent = R(view.ir), scale = 0;
   while (exponent?.kind === 'call' && ['mul', 'divide'].includes(exponent.op)) {
     const [a, b] = exponent.args;
     const side = !mentions(b) ? b : exponent.op === 'mul' && !mentions(a) ? a : null;
@@ -981,7 +985,7 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
     const factor = scalar(side);
     if (!(factor > 0 && Number.isFinite(factor))) return null;
     scale += (exponent.op === 'divide' ? -1 : 1) * Math.log(factor);
-    exponent = side === b ? a : b;
+    exponent = R(side === b ? a : b);
   }
   if (exponent?.op !== 'exp' || exponent.args?.length !== 1) return null;
   const d = axes.length;
@@ -989,6 +993,7 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
   // coefficients. Offsets remain in their source order, including x-1e16+1.
   const affine = (n: any): { axis: number; sign: number; logSlope: number } | null => {
     if (!n || !mentions(n)) return null;
+    n = R(n);
     const axis = arrayVariate
       ? n?.op === 'get' && n.args?.[0]?.name === param && n.args[1]?.kind === 'lit' ? n.args[1].value - 1 : -1
       : n?.kind === 'ref' && n.name === param ? 0 : -1;
@@ -1010,10 +1015,11 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
   const split = (n: any, coefficient: number): { body: any; offset: any } | null => {
     if (!n || !Number.isFinite(coefficient)) return null;
     if (!mentions(n)) return { body: lit(0), offset: n };
-    if (n.op === 'pow' && n.args?.length === 2 && n.args[1].kind === 'lit' && n.args[1].value === 2) {
+    n = R(n);
+    if (n.op === 'pow' && n.args?.length === 2 && R(n.args[1]).kind === 'lit' && R(n.args[1]).value === 2) {
       const a = affine(n.args[0]);
       if (!a || coefficient >= 0 || leaves.has(a.axis)) return null;
-      leaves.set(a.axis, { ...a, body: n.args[0], k: -coefficient });
+      leaves.set(a.axis, { ...a, body: C(n.args[0]), k: -coefficient });
       return { body: n, offset: lit(0) };
     }
     if (n.op === 'neg' && n.args?.length === 1) {
@@ -1037,7 +1043,8 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
     }
     return null;
   };
-  const centered = split(exponent.args[0], 1);
+  const centered0 = split(exponent.args[0], 1);
+  const centered = centered0 && { body: C(centered0.body), offset: centered0.offset };
   if (!centered || leaves.size === 0) return null;
   const offset = scalar(centered.offset);
   if (!Number.isFinite(offset)) return null;
@@ -1071,6 +1078,8 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
 // (a bound that needs θ or module context defers to the by-name path).
 function numericBoundValue(node: any): number | null {
   if (!node) return null;
+  // A shared bound is a `let` (let-view.ts): read it as its value.
+  if (node.kind === 'call' && node.op === 'let') return numericBoundValue(require('./let-view.ts').letView(node).expand());
   if (node.kind === 'lit') return +node.value;
   if (node.kind === 'call' && node.op === 'neg' && node.args?.length === 1) {
     const value = numericBoundValue(node.args[0]);
@@ -1084,10 +1093,17 @@ function numericBoundValue(node: any): number | null {
   return null;
 }
 
+// A set with shared bounds is a `let` (let-view.ts): its top node, with each
+// operand closed over the assigns it reads.
+function _setTop(setIR: any): any {
+  return setIR && setIR.kind === 'call' && setIR.op === 'let' ? require('./let-view.ts').letView(setIR).top() : setIR;
+}
+
 // Resolve an `interval(lo, hi)` set IR (literal/const bounds) to [lo, hi];
 // null for any other set shape (dynamic / named sets defer to the by-name
 // materialiser).
 function truncateSetBounds(setIR: any): [number, number] | null {
+  setIR = _setTop(setIR);
   if (!setIR || setIR.kind !== 'call' || setIR.op !== 'interval'
       || !Array.isArray(setIR.args) || setIR.args.length !== 2) return null;
   const lo = numericBoundValue(setIR.args[0]), hi = numericBoundValue(setIR.args[1]);
@@ -1103,6 +1119,7 @@ function truncateSetBounds(setIR: any): [number, number] | null {
 // for both, so a caller that binds the variate to a weight parameter has to ask
 // this separately.
 function supportIsArrayVariate(setIR: any): boolean {
+  setIR = _setTop(setIR);
   return !!setIR && setIR.kind === 'call'
     && (setIR.op === 'cartprod' || setIR.op === 'cartpow');
 }
@@ -1136,6 +1153,7 @@ function axisFromInterval(setIR: any): TruncAxis | null {
 // §03 record-variate spelling cartprod(a = S1, b = S2, ...) (see below) —
 // never returns a truthy empty axis list for either shape.
 function parseTruncationBox(setIR: any): TruncAxis[] | null {
+  setIR = _setTop(setIR);
   if (!setIR || setIR.kind !== 'call') return null;
   if (setIR.op === 'interval') {
     const a = axisFromInterval(setIR);

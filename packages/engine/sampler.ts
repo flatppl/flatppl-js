@@ -592,6 +592,30 @@ const {
   _cExp, _cLog, _cSqrt, _cPow,
 } = _complex;
 
+// `let(assigns, body)` is a self-contained binding graph: each assign is
+// evaluated once, in order, and later assigns and the body read it by name.
+// A function body keeps its intermediate bindings this way rather than as a
+// tree of copies, so evaluation costs one step per binding.
+// The scope is a child of `env`: creating it costs nothing per name in `env`,
+// a lazy value (a getter) there is computed only if read, and an assign
+// shadows a name of the same spelling.
+function _evaluateLet(ir: any, env: any) {
+  const scope: any = Object.create(env ?? null);
+  for (const a of ir.assigns || []) {
+    Object.defineProperty(scope, a.name, {
+      value: evaluateExpr(a.value, scope), writable: true, enumerable: true, configurable: true,
+    });
+  }
+  return evaluateExpr(ir.body, scope);
+}
+
+// A copy of `env` that a callable may extend. It keeps `env`'s prototype, so
+// the names of an enclosing `let` scope (a child of its env) stay visible.
+function copyEnv(env: any, extra?: any): any {
+  const out = Object.create(env == null ? Object.prototype : Object.getPrototypeOf(env));
+  return Object.assign(out, env, extra);
+}
+
 function resolveRef(ir: any, env: any) {
   // Both 'self' and '%local' references look up by name in the same env.
   // Cross-module refs (ns = <module>) would require the orchestrator to
@@ -2815,7 +2839,7 @@ function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, res
     slots[i] = _classifyBroadcastSlot(v);
   }
 
-  const elemEnv = Object.assign({}, env, { __bodyEval: bodyPlan.bodyEval });
+  const elemEnv = copyEnv(env, { __bodyEval: bodyPlan.bodyEval });
   function evalBody() {
     if (bindRowByName) {
       const row = elemEnv[fn.params[0]];
@@ -2933,6 +2957,7 @@ function getField(obj: any, key: any): any {
 }
 
 function evaluateCall(ir: any, env: any): any {
+  if (ir.op === 'let') return _evaluateLet(ir, env);
   // Cross-module call dispatch — `(call target=({ns: <module-alias>,
   // name: X}) args, kwargs)` where <module-alias> is a load_module /
   // standard_module binding. Resolves through the env's module
@@ -2971,7 +2996,7 @@ function evaluateCall(ir: any, env: any): any {
       // body's %local refs resolve. Mirrors _broadcastLogical
       // (ops-declarations.ts). Spec §05: a call is positional XOR keyword.
       const paramKwargs: string[] = fn.paramKwargs || params;
-      const callEnv: any = Object.assign({}, env);
+      const callEnv: any = copyEnv(env);
       const posArgs = ir.args || [];
       const kw = ir.kwargs || {};
       const sole = posArgs.length === 1 && Object.keys(kw).length === 0;
@@ -3429,11 +3454,12 @@ function evaluateCall(ir: any, env: any): any {
     // determiniser's truncate gate emits: `ifelse(in(v, S), density, neg(inf))`.
     // Named real/integer sets are also handled so a general `x in S` evaluates.
     const xRaw = evaluateExpr(ir.args[0], env);
-    const setIR = ir.args[1];
+    const setIR = require('./let-view.ts').topOf(ir.args[1]);
     // Membership of ONE point in a scalar-element set descriptor.
     const pointIn = (p: any, sIR: any): boolean => {
       // §03 booleans ⊂ integers: a scalar boolean is 0/1, as it is once stored in an array.
       if (typeof p === 'boolean') p = +p;
+      sIR = require('./let-view.ts').topOf(sIR);
       if (sIR && sIR.kind === 'call' && sIR.op === 'interval'
           && Array.isArray(sIR.args) && sIR.args.length === 2) {
         const loRaw = evaluateExpr(sIR.args[0], env);
@@ -3492,6 +3518,7 @@ function evaluateCall(ir: any, env: any): any {
       return Number(valueLib.isValue(raw) ? raw.data[0] : raw);
     };
     const widthOf = (sIR: any): number => {
+      sIR = require('./let-view.ts').topOf(sIR);
       if (sIR && sIR.kind === 'call' && sIR.op === 'cartpow' && sIR.args?.length === 2) {
         return sizeOf(sIR.args[1]) * widthOf(sIR.args[0]);
       }
@@ -3507,10 +3534,11 @@ function evaluateCall(ir: any, env: any): any {
       }
       return 1;
     };
-    const _isScalarSet = (sIR: any) => !(sIR && sIR.kind === 'call'
-      && (sIR.op === 'cartpow' || sIR.op === 'cartprod' || VECTOR_SET_OPS.has(sIR.op)));
+    const _isScalarSet = (s0: any) => { const sIR = require('./let-view.ts').topOf(s0); return !(sIR && sIR.kind === 'call'
+      && (sIR.op === 'cartpow' || sIR.op === 'cartprod' || VECTOR_SET_OPS.has(sIR.op))); };
     // Membership of a value in a set descriptor, recursing through product sets.
     const memberOf = (xv: any, setIR: any): boolean => {
+    setIR = require('./let-view.ts').topOf(setIR);
     const x = valueLib.isValue(xv) ? xv.data : xv;
     // §03 "Cartesian product": a record lies in `cartprod(name = S, …)` when
     // each field lies in the set of the same name, whatever the field order,
@@ -4832,7 +4860,7 @@ function _applyUnary(fIR: any, x: any, env: any): any {
   if (params.length !== 1) {
     throw new Error(`sampler.walk: pushfwd function must take one input, got ${params.length}`);
   }
-  return evaluateExpr(fn.body, { ...env, [params[0]]: x });
+  return evaluateExpr(fn.body, copyEnv(env, { [params[0]]: x }));
 }
 
 const MEASURE_OP_WALKERS = {
@@ -4887,6 +4915,7 @@ function collectValueRefs(ir: any, out: Set<string>) {
 
 module.exports = {
   // Primary API
+  copyEnv,
   rand,
   inVectorSet,
   walk,
@@ -4898,6 +4927,7 @@ module.exports = {
   makeAnalytical,
   evaluateExpr,
   evaluateExprN,
+  evaluateFieldsN: _evalBatched.evaluateFieldsN,
   isBatch,
   compileProfileBody: _profileCompile.compileProfileBody,
 
