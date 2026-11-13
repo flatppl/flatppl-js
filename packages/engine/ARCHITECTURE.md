@@ -37,6 +37,10 @@ Binned scalar interval masses use `forward-cdf.ts`'s `logIntervalProbability`.
 Exponential and shape-one Gamma tails stay logarithmic through normalization;
 other scalar laws retain the CDF/survival difference path.
 
+Aggregate canonical metadata retains only statically inferred dimensions.
+Runtime axis lengths stay local to each invocation, since generic callbacks
+share IR across calls with different array shapes.
+
 ## Pipeline overview
 
 For shared matrix × sampled vector evaluation, IR reference provenance resolves
