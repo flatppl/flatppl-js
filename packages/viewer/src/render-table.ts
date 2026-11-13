@@ -139,6 +139,9 @@ function perParamKey(label: string): string {
  *  SMC / IID priors do not. ESS falls back to the measure-level Kish ESS
  *  (fallbackEss); R̂ is NaN (rendered as —) when no per-parameter value exists. */
 export function tableDiagnostics(measure: any, label: string, fallbackEss: number): { ess: number; rhat: number } {
+  // A dataset's rows are one draw, not Monte Carlo draws: ESS, R̂ and MCSE say
+  // nothing about them (the readout's pool ESS is its sampling figure).
+  if (measure && measure.dataset) return { ess: NaN, rhat: NaN };
   const pp = measure && measure.diagnostics && measure.diagnostics.perParam;
   const e = pp && pp[perParamKey(label)];
   const ess = e && Number.isFinite(e.essBulk) ? e.essBulk : fallbackEss;

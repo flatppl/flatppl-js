@@ -56,3 +56,16 @@ U ~ iid(Normal(0, 1), 10)
   assert.equal(engine.materialiser.isRecordIidDataset('U', ctx), false);
   assert.equal(engine.materialiser.isRecordIidDataset('P', ctx), false);
 });
+
+test('the Table view gives a dataset no ess, R̂ or mcse', async () => {
+  const { tableDiagnostics } = await import('./render-table.ts');
+  const m = datasetMeasure({
+    shape: 'table', nrows: 2, n_eff: 50, sir: { K: 2, poolRows: 4, ess: 50 },
+    columns: { s: { shape: [2], data: new Float64Array([1, 2]) } },
+  });
+  const d = tableDiagnostics(m, 's', 2);
+  assert.ok(Number.isNaN(d.ess));
+  assert.ok(Number.isNaN(d.rhat));
+  // An ordinary measure keeps its fallback ESS.
+  assert.equal(tableDiagnostics({ shape: 'record', fields: {} }, 's', 7).ess, 7);
+});
