@@ -2735,6 +2735,17 @@ function _broadcastLogical(ir: any, ctx: any): any {
       }
     }
   }
+  // Selector markers are syntax, not values. Preserve them in a reified get
+  // while broadcasting the actual collection and index inputs.
+  if (['get', 'get0'].includes(fn.body?.op) && kwargKeys.length === 0
+      && sources.some((s: any) => s?.kind === 'const' && (s.name === 'all' || s.name === 'only'))
+      && fn.body.args?.every((a: any, i: number) => a.kind === 'ref' && a.name === fn.params[i])) {
+    const bodyArgs = fn.body.args.slice();
+    const keep = sources.map((s: any) => !(s?.kind === 'const' && (s.name === 'all' || s.name === 'only')));
+    for (let i = 0; i < sources.length; i++) if (!keep[i]) bodyArgs[i] = sources[i];
+    fn = { ...fn, body: { ...fn.body, args: bodyArgs }, params: fn.params.filter((_p: any, i: number) => keep[i]) };
+    sources = sources.filter((_s: any, i: number) => keep[i]);
+  }
   // Held measures / kernel names reach the density walker as IR, not as
   // evaluated values (spec §04 non-collection broadcasting inputs).
   const held = _inlineHeldMeasureArgs(fn, sources);

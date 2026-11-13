@@ -1908,6 +1908,8 @@ function walkScalarJoint(ir: any, plan: any, value: any[] | Float64Array, refArr
   return value.length === leaves.length ? null : value.slice(leaves.length);
 }
 
+const WHOLE_FIELD = Symbol('whole field variate');
+
 function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // record / kwarg-joint: ir.fields = [{name, value: subIR, source?}, …].
   // Consume named fields in declared order; env-thread each consumed
@@ -1936,7 +1938,8 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
     for (let i = 0; i < fields.length; i++) {
       const f = fields[i];
       const { head, rest: outerRest } = consumeField(cur, f.name);
-      const innerRest = walkAcc(f.value, head, refArrays, N, opts, acc, baseEnv, curOverlay);
+      const fieldOpts = f.value?.op === 'pushfwd' ? { ...opts, [WHOLE_FIELD]: true } : opts;
+      const innerRest = walkAcc(f.value, head, refArrays, N, fieldOpts, acc, baseEnv, curOverlay);
       if (!isEmptyRest(innerRest)) {
         throw new Error('density: field \'' + f.name
           + '\' did not fully consume its value');
@@ -2280,11 +2283,16 @@ function arrayVariateShape(ir: any, env: any): number[] | null {
 
 // Take the pushforward's variate off the head of `value`: a scalar, or one
 // whole array of the base's shape.
-function consumePushfwdVariate(baseIR: any, value: any, env: any): { head: any; rest: any } {
+function consumePushfwdVariate(baseIR: any, value: any, env: any, wholeField: boolean): { head: any; rest: any } {
   // A record-valued pushforward (§04 relabel(M, names) ≡ pushfwd(fn(relabel(_,
   // names)), M) is one) takes the whole record point as its variate.
   if (isRecordValue(value)) return { head: value, rest: null };
   const shape = arrayVariateShape(baseIR, env);
+  // A named field has already been separated from its siblings. Its matrix
+  // is the whole observed variate even when the base shape is unresolved.
+  if (!shape && wholeField && valueLib.isValue(value) && value.shape.length > 1) {
+    return { head: valueLib._logicalDense(value), rest: null };
+  }
   if (!shape) return consumeScalar(value);
   if (valueLib.isValue(value) && value.shape.length === shape.length
       && value.shape.every((n: number, i: number) => n === shape[i])) {
@@ -2459,6 +2467,8 @@ function walkLocscale(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
 }
 
 function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const wholeField = !!opts?.[WHOLE_FIELD];
+  if (wholeField) opts = { ...opts, [WHOLE_FIELD]: false };
   // pushfwd(f, M) density per spec §06: requires f to be a
   // `bijection(f, f_inv, logvolume)` annotation so we have an inverse
   // and a Jacobian volume element. Then:
@@ -2684,7 +2694,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
     return yRest;
   }
   // Consume the head — pushfwd's variate footprint matches M's.
-  const { head: y, rest } = consumePushfwdVariate(M_ir, value, Object.assign({}, baseEnv, overlay));
+  const { head: y, rest } = consumePushfwdVariate(M_ir, value, Object.assign({}, baseEnv, overlay), wholeField);
 
   // Latent (kernel-fed) bijection params: when f_inv's or logvolume's body
   // references a per-atom refArrays name (the affine shift/scale ARE the
@@ -3253,6 +3263,14 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // mistaken for a kernel head.
   else if (hd && hd.kind === 'ref' && hd.name && samplerLib.isKnownDistribution(hd.name)) kernelName = hd.name;
   else if (hd && hd.kind === 'lit' && typeof hd.value === 'string') kernelName = hd.value;
+  // Reuse the general per-cell kernel walker for vector/matrix-valued leaves.
+  if (kernelName && (OP_HANDLERS as any)[kernelName] === walkMultivariate
+      && Object.keys((ir as any).kwargs || {}).length === 0) {
+    const params = args.slice(1).map((_x: any, i: number) => '__broadcast_arg' + i);
+    const body = { kind: 'call', op: kernelName,
+      args: params.map((name: string) => ({ kind: 'ref', ns: '%local', name })) };
+    return walkKernelBroadcastMeasureKernel(ir, { params, body }, value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
   if (!kernelName || !samplerLib.isKnownDistribution(kernelName)) {
     // A user-kernel head (not a built-in distribution) reaching the density
     // path is, in the generative-bodied case (engine-concepts §21), the
