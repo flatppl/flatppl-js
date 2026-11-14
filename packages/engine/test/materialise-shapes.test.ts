@@ -22,6 +22,33 @@ const assert = require('node:assert/strict');
 
 const { makeMatCtx, expectPlottable } = require('./_materialise-helpers.ts');
 
+test('fixed Gaussian scores remain numeric values inside array literals', async () => {
+  const { ctx } = makeMatCtx(`
+g = load_module("gaussian.flatppl")
+p = logdensityof(g.observations([0.0, 0.0], eye(2), 0.2), [0.7, -0.2])
+out = [1.0, p]
+single = [p]
+`, { sampleCount: 3, bundle: { sources: {
+    'gaussian.flatppl': `observations(mean, covariance, noise_sd) =
+    MvNormal(mean, covariance + noise_sd^2 * eye(lengthof(mean)))`,
+  } } });
+  // Independent coordinates have variance 1 + 0.2². The joint score is
+  // the sum of their scalar Normal log densities (spec §08, MvNormal).
+  const variance = 1.04;
+  const score = -Math.log(2 * Math.PI * variance) - (0.7**2 + 0.2**2) / (2 * variance);
+  const p = await ctx.getMeasure('p');
+  assert.ok(Math.abs(p.samples[0] - score) < 1e-12);
+  const out = await ctx.getMeasure('out');
+  assert.deepEqual(out.dims, [2]);
+  for (let i = 0; i < ctx.sampleCount; i++) {
+    assert.equal(out.samples[2 * i], 1);
+    assert.ok(Math.abs(out.samples[2 * i + 1] - score) < 1e-12);
+  }
+  const single = await ctx.getMeasure('single');
+  assert.deepEqual(single.dims, [1]);
+  for (const value of single.samples) assert.ok(Math.abs(value - score) < 1e-12);
+});
+
 // ---------------------------------------------------------------------
 // Baseline: scalars
 // ---------------------------------------------------------------------
