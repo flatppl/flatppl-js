@@ -135,6 +135,37 @@ test('svd gives an orthonormal left basis for exact zero singular values', () =>
   }
 });
 
+test('svd retains singular values and reconstruction at disparate scales', () => {
+  for (const scale of [1e-200, 1e200]) {
+    const src = `${LA}A = rowstack([[${scale}], [${scale}]])\nf = la.svd(A)\nU = f.U\nS = f.S\nV = f.V`;
+    const U = array(src, 'U').data, S = array(src, 'S').data, V = array(src, 'V').data;
+    assert.ok(Math.abs(S[0] / scale - Math.SQRT2) < 1e-12);
+    assert.ok(Math.abs(U[0] ** 2 + U[1] ** 2 - 1) < 1e-12);
+    for (const u of U) assert.ok(Math.abs(u * (S[0] / scale) * V[0] - 1) < 1e-12);
+    const pair = array(`${LA}S = la.svd(rowstack([[${scale}, ${scale}], [${scale}, 0.0]])).S`, 'S').data;
+    assert.ok(Math.abs(pair[0] / scale - (1 + Math.sqrt(5)) / 2) < 1e-12);
+    assert.ok(Math.abs(pair[1] / scale - (Math.sqrt(5) - 1) / 2) < 1e-12);
+  }
+  const S = array(`${LA}S = la.svd(rowstack([[1e200, 0.0], [0.0, 1e-200]])).S`, 'S').data;
+  assert.equal(S[0], 1e200);
+  assert.equal(S[1], 1e-200);
+});
+
+test('svd resolves clustered singular values of a rotated matrix', () => {
+  // [[1, δ], [δ, 1]] has singular values 1 ± δ for 0 < δ < 1.
+  const S = array(`${LA}S = la.svd(rowstack([[1.0, 1e-8], [1e-8, 1.0]])).S`, 'S').data;
+  assert.ok(Math.abs(S[0] - (1 + 1e-8)) < 1e-14);
+  assert.ok(Math.abs(S[1] - (1 - 1e-8)) < 1e-14);
+});
+
+test('svd retains a small singular value for nearly dependent columns', () => {
+  // The product of singular values equals |det A| = 1e-8.
+  const src = `${LA}f = la.svd(rowstack([[1.0, 1.0], [0.0, 1e-8]]))\nS = f.S\nU = f.U`;
+  const S = array(src, 'S').data, U = array(src, 'U').data;
+  assert.ok(Math.abs(S[0] * S[1] / 1e-8 - 1) < 1e-12);
+  assert.ok(Math.abs(U[0] * U[1] + U[2] * U[3]) < 1e-12);
+});
+
 // §09 `lu(A)`: P·A = L·U. A = [[4, 3], [6, 3]] pivots row 2 first.
 test('ext-linear-algebra record members read field by field', () => {
   const A = 'A = rowstack([[4.0, 3.0], [6.0, 3.0]])\n';

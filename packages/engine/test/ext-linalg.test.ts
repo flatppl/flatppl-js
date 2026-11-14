@@ -271,9 +271,8 @@ test('lstsq: overdetermined 4x2 with noise — minimises residual', () => {
   const A = matVal(4, 2, [1, 1, 1, 2, 1, 3, 1, 4]);
   const b = { shape: [4], data: new Float64Array([3.1, 4.9, 7.2, 8.8]) };
   const x = extLinalg._lstsq(A, b);
-  // Computed by hand / known formula: x ≈ [1.05, 1.97]
-  assert.ok(Math.abs(x.data[0] - 1.05) < 0.1);
-  assert.ok(Math.abs(x.data[1] - 1.97) < 0.1);
+  // Exact least-squares coefficients from centered sums: [1.15, 1.94].
+  assertClose(Array.from(x.data), [1.15, 1.94], 1e-12);
 });
 
 test('lstsq: rejects b length mismatch', () => {

@@ -567,6 +567,18 @@ function _eigmin(A: any): number {
 // bidiag+QR for very tall thin matrices. Defer the more involved
 // algorithms until a profile shows it.
 
+function _columnNorm(B: Float64Array, m: number, n: number, j: number): number {
+  let scale = 0;
+  for (let i = 0; i < m; i++) scale = Math.max(scale, Math.abs(B[i * n + j]));
+  if (scale === 0 || !Number.isFinite(scale)) return scale;
+  let sum = 0;
+  for (let i = 0; i < m; i++) {
+    const x = B[i * n + j] / scale;
+    sum += x * x;
+  }
+  return scale * Math.sqrt(sum);
+}
+
 function _svd(A: any): any {
   A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
@@ -578,37 +590,46 @@ function _svd(A: any): any {
   const V = new Float64Array(n * n);
   for (let i = 0; i < n; i++) V[i * n + i] = 1;
 
-  // Frobenius² of A — used to set the convergence threshold.
-  let frob2 = 0;
-  for (let i = 0; i < m * n; i++) frob2 += B[i] * B[i];
-  const tol = _JACOBI_TOL_REL * frob2;
-
   for (let sweep = 0; sweep < _JACOBI_MAX_SWEEPS; sweep++) {
-    // Sum of |col_p · col_q|² over all pairs — converges to 0.
-    let off2 = 0;
+    let rotated = false;
     for (let p = 0; p < n - 1; p++) {
       for (let q = p + 1; q < n; q++) {
-        // a = ||col_p||², b = ||col_q||², c = col_p · col_q.
+        // Use raw products at normal scales; normalize columns separately
+        // when squared norms overflow or underflow. A global scale can erase
+        // a small singular value beside a large one.
         let a = 0, b = 0, c = 0;
         for (let i = 0; i < m; i++) {
           const xp = B[i * n + p], xq = B[i * n + q];
-          a += xp * xp;
-          b += xq * xq;
-          c += xp * xq;
+          a += xp * xp; b += xq * xq; c += xp * xq;
         }
-        off2 += c * c;
-        if (Math.abs(c) < Math.sqrt(a * b) * _JACOBI_TOL_REL) continue;
+        const normal = 2.2250738585072014e-308;
+        if (a >= normal && b >= normal && Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c)) {
+          if ((Math.abs(c) / Math.sqrt(a)) / Math.sqrt(b) <= _JACOBI_TOL_REL) continue;
+        } else {
+          const np = _columnNorm(B, m, n, p), nq = _columnNorm(B, m, n, q);
+          if (np === 0 || nq === 0) continue;
+          let corr = 0;
+          for (let i = 0; i < m; i++) corr += (B[i * n + p] / np) * (B[i * n + q] / nq);
+          if (Math.abs(corr) <= _JACOBI_TOL_REL) continue;
+          const scale = Math.max(np, nq);
+          const sp = np / scale, sq = nq / scale;
+          a = sp * sp; b = sq * sq; c = (sp * sq) * corr;
+        }
+        if (c === 0) continue;
         // Givens rotation: zero c by rotating cols p, q by angle θ
         // with tan(2θ) = 2c / (a - b).
         const denom = a - b;
         let t: number;
-        if (Math.abs(denom) < 1e-300) {
+        if (denom === 0) {
           t = (c > 0 ? 1 : -1);
         } else {
-          const theta = denom / (2 * c);
+          const theta = (denom / c) / 2;
           const sign = theta >= 0 ? 1 : -1;
-          t = sign / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+          t = Math.abs(theta) > 1e150 ? c / denom
+            : sign / (Math.abs(theta) + Math.hypot(theta, 1));
         }
+        if (t === 0) continue;
+        rotated = true;
         const cs = 1 / Math.sqrt(t * t + 1);
         const sn = t * cs;
         // Rotate cols p, q of B:  new_col_p = cs·col_p + sn·col_q;
@@ -627,16 +648,14 @@ function _svd(A: any): any {
         }
       }
     }
-    if (off2 < tol * tol) break;
+    if (!rotated) break;
   }
   // Extract singular values from the column norms of B; U columns
   // are the normalised B columns.
   const S = new Float64Array(n);
   const U = new Float64Array(m * n);
   for (let j = 0; j < n; j++) {
-    let norm2 = 0;
-    for (let i = 0; i < m; i++) norm2 += B[i * n + j] * B[i * n + j];
-    const norm = Math.sqrt(norm2);
+    const norm = _columnNorm(B, m, n, j);
     S[j] = norm;
     if (norm > 0) {
       for (let i = 0; i < m; i++) U[i * n + j] = B[i * n + j] / norm;
