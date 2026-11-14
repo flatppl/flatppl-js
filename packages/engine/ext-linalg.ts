@@ -246,16 +246,13 @@ function _matexp(A: any): any {
 //
 //   1. For each column k in 0..n:
 //        Compute the Householder reflector v_k that zeros A[k+1:m, k].
-//        Apply (I - 2 v_k v_k^T) to A[k:, k:] in-place.
+//        Apply H_k = I - beta_k v_k v_k^T to A[k:, k:] in-place.
 //   2. R is the upper-triangular part of the modified A.
-//   3. Q = (I - 2 v_0 v_0^T) · ... · (I - 2 v_{n-1} v_{n-1}^T),
-//      built by accumulating reflectors into an identity matrix.
+//   3. Apply the saved H_k in reverse to the first n identity columns,
+//      forming Q without a full m×m workspace.
 //
 // Stable for m × n matrices in the size range FlatPPL targets.
-// Spec §07 mandates `qr` in base (currently unimplemented there);
-// surfacing here also satisfies the §09 ext-linear-algebra surface.
-// When base later gains its own qr, this binding can route to the
-// same impl.
+// The base `qr` binding uses this same implementation (spec §07).
 
 function _qr(A: any): any {
   A = valueLib._logicalDense(A);
@@ -264,10 +261,8 @@ function _qr(A: any): any {
   // Work on a fresh copy of A; we'll modify it into R in-place.
   const R_full = new Float64Array(m * n);
   for (let i = 0; i < m * n; i++) R_full[i] = A.data[i];
-  // Accumulate Q via implicit application of each reflector to an
-  // identity matrix.
-  const Q_full = new Float64Array(m * m);
-  for (let i = 0; i < m; i++) Q_full[i * m + i] = 1;
+  const reflectors = new Float64Array(m * n);
+  const betas = new Float64Array(n);
 
   const v = new Float64Array(m);                 // reflector workspace
   for (let k = 0; k < n; k++) {
@@ -292,9 +287,8 @@ function _qr(A: any): any {
     // alpha = -sign(x[0]) * normX (Householder convention; flip sign
     // to avoid catastrophic cancellation in v[0]).
     const alpha = (x0 >= 0 ? -1 : 1) * normX;
-    // v = x - alpha · e_1, then normalise so v^T v = 2 (the standard
-    // convention that turns the reflector into I - v v^T instead of
-    // I - 2 v v^T / (v^T v)).
+    // Keep v = x - alpha · e_1 at the scaled column's magnitude and use
+    // beta = 2 / (v^T v), without forming squares of the original entries.
     v[k] = pivot - alpha;
     let vNorm2 = v[k] * v[k];
     for (let i = k + 1; i < m; i++) {
@@ -309,19 +303,21 @@ function _qr(A: any): any {
       const s = beta * dot;
       for (let i = k; i < m; i++) R_full[i * n + j] -= s * v[i];
     }
-    // Apply the same H to Q_full[:, k:m] on the right.
-    // Q = Q · H_k means Q[:, k:] gets Q[:, k:] - beta · (Q[:, k:] · v) · v^T.
-    for (let i = 0; i < m; i++) {
-      let dot = 0;
-      for (let j = k; j < m; j++) dot += Q_full[i * m + j] * v[j];
-      const s = beta * dot;
-      for (let j = k; j < m; j++) Q_full[i * m + j] -= s * v[j];
-    }
+    betas[k] = beta;
+    for (let i = k; i < m; i++) reflectors[i * n + k] = v[i];
   }
-  // Thin slices: Q = first n columns of Q_full; R = top n rows of R_full.
+  // Apply reflectors in reverse to the first n columns of the identity.
   const Q = new Float64Array(m * n);
-  for (let i = 0; i < m; i++) {
-    for (let j = 0; j < n; j++) Q[i * n + j] = Q_full[i * m + j];
+  for (let i = 0; i < n; i++) Q[i * n + i] = 1;
+  for (let k = n - 1; k >= 0; k--) {
+    const beta = betas[k];
+    if (beta === 0) continue;
+    for (let j = k; j < n; j++) {
+      let dot = 0;
+      for (let i = k; i < m; i++) dot += reflectors[i * n + k] * Q[i * n + j];
+      const s = beta * dot;
+      for (let i = k; i < m; i++) Q[i * n + j] -= s * reflectors[i * n + k];
+    }
   }
   // R is the upper triangle: what the reflectors leave below it is rounding.
   const R = new Float64Array(n * n);
