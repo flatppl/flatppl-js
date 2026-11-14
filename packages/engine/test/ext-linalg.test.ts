@@ -144,6 +144,21 @@ test('matexp: zero matrix → identity', () => {
   assertClose(E.data, [1, 0, 0, 0, 1, 0, 0, 0, 1]);
 });
 
+test('matexp: nonfinite entries propagate NaN without an unbounded squaring loop', () => {
+  for (const entry of [NaN, Infinity, -Infinity]) {
+    const E = extLinalg._matexp(matVal(2, 2, [entry, 0, 0, 0]));
+    assert.ok([...E.data].every(Number.isNaN));
+  }
+});
+
+test('matexp: finite nilpotent matrix survives an overflowing unscaled column sum', () => {
+  const t = Number.MAX_VALUE * 0.75;
+  // N²=0, hence exp(N)=I+N, although ||N||₁=2t exceeds the dtype range.
+  const E = extLinalg._matexp(matVal(3, 3, [0, 0, t, 0, 0, t, 0, 0, 0]));
+  const scaled = Array.from(E.data, (entry: number, i: number) => i === 2 || i === 5 ? entry / t : entry);
+  assertClose(scaled, [1, 0, 1, 0, 1, 1, 0, 0, 1], 2e-12);
+});
+
 test('matexp: identity → e · I', () => {
   const A = matVal(2, 2, [1, 0, 0, 1]);
   const E = extLinalg._matexp(A);

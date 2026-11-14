@@ -149,12 +149,12 @@ function _identity(n: number): Float64Array {
   return I;
 }
 
-function _norm1(A: Float64Array, n: number): number {
-  // Max column sum of |A|.
+function _norm1(A: Float64Array, n: number, divisor = 1): number {
+  // Divide each entry before summation to keep the scaling norm finite.
   let max = 0;
   for (let j = 0; j < n; j++) {
     let s = 0;
-    for (let i = 0; i < n; i++) s += Math.abs(A[i * n + j]);
+    for (let i = 0; i < n; i++) s += Math.abs(A[i * n + j] / divisor);
     if (s > max) max = s;
   }
   return max;
@@ -166,13 +166,20 @@ function _matexp(A: any): any {
   if (n !== A.shape[1]) throw new Error('matexp: A must be a square matrix');
   // Scaling: pick s = max(0, ceil(log2(||A||_1 / θ_13))).
   const THETA_13 = 5.371920351148152;
-  const norm = _norm1(A.data, n);
-  let s = 0;
-  if (norm > THETA_13) {
-    s = Math.max(0, Math.ceil(Math.log2(norm / THETA_13)));
+  let maximum = 0;
+  for (const entry of A.data) {
+    if (!Number.isFinite(entry)) {
+      // In particular, infinity must never become an infinite squaring count.
+      return _matValue(new Float64Array(n * n).fill(NaN), n, n);
+    }
+    maximum = Math.max(maximum, Math.abs(entry));
   }
-  const scale = Math.pow(2, s);
-  let M = _matScale(A.data, 1 / scale);
+  const safeMaximum = maximum || 1;
+  const logNorm = Math.log2(safeMaximum) + Math.log2(Math.max(1, _norm1(A.data, n, safeMaximum)));
+  const s = Math.max(0, Math.ceil(logNorm - Math.log2(THETA_13)));
+  // Splitting the reciprocal avoids overflow or subnormal factors at large norms.
+  let M = _matScale(A.data, Math.pow(2, -Math.floor(s / 2)));
+  M = _matScale(M, Math.pow(2, -(s - Math.floor(s / 2))));
   // Padé(13): compute U, V using powers M^2, M^4, M^6.
   const M2 = _matmul(M, M, n);
   const M4 = _matmul(M2, M2, n);
