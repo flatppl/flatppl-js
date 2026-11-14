@@ -640,9 +640,6 @@ function _svd(A: any): any {
     S[j] = norm;
     if (norm > 0) {
       for (let i = 0; i < m; i++) U[i * n + j] = B[i * n + j] / norm;
-    } else {
-      // Zero singular value — keep e_j as a placeholder column for U.
-      U[j * n + j] = 1;
     }
   }
   // Sort singular values descending. Permute U columns + V columns.
@@ -657,6 +654,27 @@ function _svd(A: any): any {
     Ssorted[newJ] = S[oldJ];
     for (let i = 0; i < m; i++) Usorted[i * n + newJ] = U[i * n + oldJ];
     for (let i = 0; i < n; i++) Vsorted[i * n + newJ] = V[i * n + oldJ];
+  }
+  // Complete the left basis after sorting, so every nonzero singular vector
+  // is already present. Choose the coordinate with the largest residual and
+  // reorthogonalize to avoid duplicating an existing vector.
+  for (let j = 0; j < n; j++) {
+    if (Ssorted[j] !== 0) continue;
+    let best = 0, bestResidual = -Infinity;
+    for (let i = 0; i < m; i++) {
+      let residual = 1;
+      for (let k = 0; k < j; k++) residual -= Usorted[i * n + k] ** 2;
+      if (residual > bestResidual) { bestResidual = residual; best = i; }
+    }
+    Usorted[best * n + j] = 1;
+    for (let pass = 0; pass < 2; pass++) for (let k = 0; k < j; k++) {
+      let dot = 0;
+      for (let i = 0; i < m; i++) dot += Usorted[i * n + k] * Usorted[i * n + j];
+      for (let i = 0; i < m; i++) Usorted[i * n + j] -= dot * Usorted[i * n + k];
+    }
+    let norm = 0;
+    for (let i = 0; i < m; i++) norm = Math.hypot(norm, Usorted[i * n + j]);
+    for (let i = 0; i < m; i++) Usorted[i * n + j] /= norm;
   }
   return {
     U: _matValue(Usorted, m, n),

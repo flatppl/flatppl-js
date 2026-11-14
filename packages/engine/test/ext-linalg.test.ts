@@ -394,6 +394,13 @@ test('svd: 2x2 diagonal — singular values are |diag|, sorted descending', () =
   assertClose(Array.from(fields.S.data), [3, 2], 1e-12);
 });
 
+test('svd: zero matrix has an orthonormal left basis', () => {
+  const { U, S } = extLinalg._svd(matVal(3, 2, [0, 0, 0, 0, 0, 0]));
+  assert.deepEqual(Array.from(S.data), [0, 0]);
+  const u = Array.from(U.data) as number[];
+  assertClose(flatMatMul(flatTranspose(u, 3, 2), u, 2, 3, 2), [1, 0, 0, 1], 1e-12);
+});
+
 test('svd: 2x2 symmetric — round-trip A = U · diag(S) · V^T', () => {
   // A = [[2, 1], [1, 2]] — symmetric, singular values 3 and 1.
   const A_data = [2, 1, 1, 2];

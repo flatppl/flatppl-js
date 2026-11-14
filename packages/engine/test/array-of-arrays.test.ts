@@ -115,6 +115,26 @@ test('a matrix is not an array of arrays for joinblocks', () => {
 
 const LA = 'la = standard_module("ext-linear-algebra", "0.1")\n';
 
+test('svd gives an orthonormal left basis for exact zero singular values', () => {
+  // The nonzero left singular subspace is span([1, 0, 0]); its projector is diag(1, 0, 0).
+  const src = `${LA}A = rowstack([[0.0, 1.0], [0.0, 0.0], [0.0, 0.0]])\nf = la.svd(A)\nU = f.U\nS = f.S\nV = f.V`;
+  const U = array(src, 'U').data, S = array(src, 'S').data, V = array(src, 'V').data;
+  assert.deepEqual(S, [1, 0]);
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    let dot = 0;
+    for (let k = 0; k < 3; k++) dot += U[k * 2 + i] * U[k * 2 + j];
+    assert.ok(Math.abs(dot - (i === j ? 1 : 0)) < 1e-12);
+  }
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) {
+    let actual = 0;
+    for (let k = 0; k < 2; k++) actual += U[i * 2 + k] * S[k] * V[j * 2 + k];
+    assert.ok(Math.abs(actual - (i === 0 && j === 1 ? 1 : 0)) < 1e-12);
+  }
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+    assert.ok(Math.abs(U[i * 2] * U[j * 2] - (i === 0 && j === 0 ? 1 : 0)) < 1e-12);
+  }
+});
+
 // §09 `lu(A)`: P·A = L·U. A = [[4, 3], [6, 3]] pivots row 2 first.
 test('ext-linear-algebra record members read field by field', () => {
   const A = 'A = rowstack([[4.0, 3.0], [6.0, 3.0]])\n';
