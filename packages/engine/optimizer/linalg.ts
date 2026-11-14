@@ -35,6 +35,11 @@ function matvec(A: any, v: any): number[] {
 function symEig(Ain: any): { values: number[]; vectors: number[][] } {
   const n = Ain.length;
   if (n === 1) return { values: [Ain[0][0]], vectors: [[1]] };
+  let scale = 0;
+  for (const row of Ain) for (const x of row) scale = Math.max(scale, Math.abs(x));
+  if (scale === 0 || !Number.isFinite(scale)) scale = 1;
+  // Keep entries in their original units so a tiny diagonal is not lost
+  // beside a large one; scale only the convergence and angle arithmetic.
   const A = Ain.map((row: any) => row.slice());
   const V: number[][] = [];
   for (let i = 0; i < n; i++) { V.push(new Array(n).fill(0)); V[i][i] = 1; }
@@ -42,7 +47,7 @@ function symEig(Ain: any): { values: number[]; vectors: number[][] } {
   const MAX_SWEEPS = 100;
   for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
     let off = 0;
-    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += A[p][q] * A[p][q];
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += (A[p][q] / scale) ** 2;
     if (off < 1e-30) break;
 
     for (let p = 0; p < n; p++) {
@@ -52,7 +57,7 @@ function symEig(Ain: any): { values: number[]; vectors: number[][] } {
         // Givens rotation G(p,q,θ) with G[p][p]=G[q][q]=c, G[p][q]=s,
         // G[q][p]=−s. A ← Gᵀ A G zeros the (p,q) entry when
         // tan(2θ) = 2·apq/(aqq − app), i.e. 2θ = atan2(2·apq, aqq − app).
-        const theta = 0.5 * Math.atan2(2 * apq, A[q][q] - A[p][p]);
+        const theta = 0.5 * Math.atan2(2 * (apq / scale), A[q][q] / scale - A[p][p] / scale);
         const c = Math.cos(theta), s = Math.sin(theta);
 
         // A ← A·G (update columns p,q)

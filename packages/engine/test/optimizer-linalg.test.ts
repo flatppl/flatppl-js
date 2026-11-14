@@ -50,6 +50,36 @@ test('symEig: satisfies the eigen-equation A·vⱼ = λⱼ·vⱼ with orthonorma
   assert.ok(Math.abs(dot01) < 1e-7, `cols 0,1 not orthogonal: ${dot01}`);
 });
 
+test('symEig and covariance factors preserve relative accuracy at different scales', () => {
+  for (const scale of [1, 1e-16, 1e16]) {
+    const A = [[2 * scale, scale], [scale, 2 * scale]];
+    const { values, vectors, sqrt, invSqrt } = la.matSqrtAndInvSqrt(A);
+    const sorted = values.slice().sort((a: number, b: number) => a - b);
+    assert.ok(Math.abs(sorted[0] / scale - 1) < 1e-12);
+    assert.ok(Math.abs(sorted[1] / scale - 3) < 1e-12);
+    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+      let av = 0, ss = 0, si = 0;
+      for (let k = 0; k < 2; k++) {
+        av += (A[i][k] / scale) * vectors[k][j];
+        ss += (sqrt[i][k] / Math.sqrt(scale)) * (sqrt[k][j] / Math.sqrt(scale));
+        si += sqrt[i][k] * invSqrt[k][j];
+      }
+      assert.ok(Math.abs(av - (values[j] / scale) * vectors[i][j]) < 1e-12);
+      assert.ok(Math.abs(ss - A[i][j] / scale) < 1e-12);
+      assert.ok(Math.abs(si - (i === j ? 1 : 0)) < 1e-12);
+    }
+  }
+});
+
+test('covariance factor retains its eigenvalue floor for a zero matrix', () => {
+  const { values, sqrt, invSqrt } = la.matSqrtAndInvSqrt([[0, 0], [0, 0]]);
+  assert.deepEqual(values, [0, 0]);
+  assert.ok(Math.abs(sqrt[0][0] / 1e-15 - 1) < 1e-12);
+  assert.ok(Math.abs(invSqrt[0][0] / 1e15 - 1) < 1e-12);
+  assert.deepEqual(la.symEig([[1e-40]]), { values: [1e-40], vectors: [[1]] });
+  assert.deepEqual(la.symEig([[1e200, 0], [0, 1e-200]]).values, [1e200, 1e-200]);
+});
+
 test('matSqrtAndInvSqrt: B·diag(d)·Bᵀ reconstructs A^{1/2}, and the inverse undoes it', () => {
   const A = [[4, 1], [1, 3]];
   const { sqrt, invSqrt } = la.matSqrtAndInvSqrt(A);
