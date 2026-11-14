@@ -274,24 +274,30 @@ function _qr(A: any): any {
     // Extract column k from row k down: x = R_full[k:m, k].
     // Nothing below the diagonal: no reflector, as LAPACK dlarfg (and so
     // numpy) does, which keeps the sign of R[k, k].
-    let below2 = 0;
+    let belowScale = 0;
     for (let i = k + 1; i < m; i++) {
-      const xi = R_full[i * n + k];
-      below2 += xi * xi;
+      belowScale = Math.max(belowScale, Math.abs(R_full[i * n + k]));
     }
-    if (below2 === 0) continue;
+    if (belowScale === 0) continue;
     const x0 = R_full[k * n + k];
-    const normX = Math.sqrt(below2 + x0 * x0);
+    // Scale before squaring so finite columns do not overflow or underflow.
+    const scale = Math.max(Math.abs(x0), belowScale);
+    const pivot = x0 / scale;
+    let norm2 = pivot * pivot;
+    for (let i = k + 1; i < m; i++) {
+      v[i] = R_full[i * n + k] / scale;
+      norm2 += v[i] * v[i];
+    }
+    const normX = Math.sqrt(norm2);
     // alpha = -sign(x[0]) * normX (Householder convention; flip sign
     // to avoid catastrophic cancellation in v[0]).
     const alpha = (x0 >= 0 ? -1 : 1) * normX;
     // v = x - alpha · e_1, then normalise so v^T v = 2 (the standard
     // convention that turns the reflector into I - v v^T instead of
     // I - 2 v v^T / (v^T v)).
-    v[k] = x0 - alpha;
+    v[k] = pivot - alpha;
     let vNorm2 = v[k] * v[k];
     for (let i = k + 1; i < m; i++) {
-      v[i] = R_full[i * n + k];
       vNorm2 += v[i] * v[i];
     }
     if (vNorm2 === 0) continue;
