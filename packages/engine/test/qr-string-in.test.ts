@@ -97,6 +97,31 @@ for (const [name, { A, Q, R }] of Object.entries(NUMPY)) {
   });
 }
 
+test('qr reconstructs a scaled column with an orthonormal basis', () => {
+  for (const scale of [1e-200, 1e200]) {
+    const src = `f = qr(rowstack([[${scale}], [${scale}]]))\nQ = f.Q\nR = f.R`;
+    const q = rows(fixed(src, 'Q')), r = rows(fixed(src, 'R'));
+    for (let i = 0; i < 2; i++) {
+      assert.ok(Math.abs(q[i][0] * (r[0][0] / scale) - 1) < 1e-12);
+    }
+    assert.ok(Math.abs(q[0][0] ** 2 + q[1][0] ** 2 - 1) < 1e-12);
+    assert.ok(Math.abs(r[0][0] / scale + Math.SQRT2) < 1e-12);
+  }
+});
+
+test('qr retains an orthonormal basis for a zero leading column', () => {
+  const src = 'f = qr(rowstack([[0.0, 1.0], [0.0, 2.0], [0.0, 3.0]]))\nQ = f.Q\nR = f.R';
+  const q = rows(fixed(src, 'Q')), r = rows(fixed(src, 'R'));
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) {
+    const actual = q[i][0] * r[0][j] + q[i][1] * r[1][j];
+    assert.ok(Math.abs(actual - (j === 0 ? 0 : i + 1)) < 1e-12);
+  }
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    const dot = q.reduce((sum, row) => sum + row[i] * row[j], 0);
+    assert.ok(Math.abs(dot - (i === j ? 1 : 0)) < 1e-12);
+  }
+});
+
 test('qr takes its spec input name, and a field of the call reads directly', () => {
   const x = fixed('x = qr(A = rowstack([[3.0, 0.0], [4.0, 5.0]])).R', 'x');
   assert.deepEqual(Array.from(x.data), [-5, -4, 0, 3]);
