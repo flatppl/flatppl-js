@@ -271,9 +271,8 @@ test('lstsq: overdetermined 4x2 with noise — minimises residual', () => {
   const A = matVal(4, 2, [1, 1, 1, 2, 1, 3, 1, 4]);
   const b = { shape: [4], data: new Float64Array([3.1, 4.9, 7.2, 8.8]) };
   const x = extLinalg._lstsq(A, b);
-  // Computed by hand / known formula: x ≈ [1.05, 1.97]
-  assert.ok(Math.abs(x.data[0] - 1.05) < 0.1);
-  assert.ok(Math.abs(x.data[1] - 1.97) < 0.1);
+  // Exact least-squares coefficients from centered sums: [1.15, 1.94].
+  assertClose(Array.from(x.data), [1.15, 1.94], 1e-12);
 });
 
 test('lstsq: rejects b length mismatch', () => {
@@ -392,6 +391,13 @@ test('svd: 2x2 diagonal — singular values are |diag|, sorted descending', () =
   const A = matVal(2, 2, [3, 0, 0, 2]);
   const fields = extLinalg._svd(A);
   assertClose(Array.from(fields.S.data), [3, 2], 1e-12);
+});
+
+test('svd: zero matrix has an orthonormal left basis', () => {
+  const { U, S } = extLinalg._svd(matVal(3, 2, [0, 0, 0, 0, 0, 0]));
+  assert.deepEqual(Array.from(S.data), [0, 0]);
+  const u = Array.from(U.data) as number[];
+  assertClose(flatMatMul(flatTranspose(u, 3, 2), u, 2, 3, 2), [1, 0, 0, 1], 1e-12);
 });
 
 test('svd: 2x2 symmetric — round-trip A = U · diag(S) · V^T', () => {
