@@ -231,7 +231,9 @@ function describeStepKernel(compIR: any, bindings: any, op?: string,
   if ('reason' in additional) {
     return { reason: shownAs + ': ' + additional.reason + ' (§04 "Explicit callback parameters")' };
   }
-  const dist = _peelLawof(ir.body);
+  // Read the distribution through shared expressions while retaining their scope.
+  const { topOf } = require('./let-view.ts');
+  const dist = topOf(_peelLawof(topOf(ir.body)));
   if (!dist || dist.kind !== 'call' || !dist.op
       || !SAMPLEABLE || !SAMPLEABLE.has(dist.op)) {
     return {
