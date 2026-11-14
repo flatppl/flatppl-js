@@ -1266,12 +1266,15 @@ function classifyDerivation(
 
       // §03/§04: mixed/computed scalar entries still make one array value.
       // The evaluator already packs real scalar cells as [samples, length].
-      // Reference-only vectors keep their joint derivation for law expansion;
-      // the materializer supplies their packed value without changing that law.
+      // Fixed scalar densities use materialisation rather than fixedValues;
+      // arrays containing them need this same value route. Stochastic
+      // reference-only vectors keep their joint derivation for law expansion.
       const t = binding.inferredType;
-      if (binding.phase === 'stochastic' && t?.kind === 'array' && t.rank === 1
+      if ((binding.phase === 'fixed' || binding.phase === 'stochastic')
+          && t?.kind === 'array' && t.rank === 1
           && t.elem?.kind === 'scalar' && ['boolean', 'integer', 'real'].includes(t.elem.prim)
-          && rhsIR.args.some((a: any) => a.kind !== 'ref' || a.ns !== 'self')
+          && (binding.phase === 'fixed'
+            || rhsIR.args.some((a: any) => a.kind !== 'ref' || a.ns !== 'self'))
           && rhsIR.args.every((a: any) => isEvaluable(a, bindings))) {
         return { kind: 'evaluate', ir: rhsIR };
       }

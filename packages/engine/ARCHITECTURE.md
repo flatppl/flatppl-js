@@ -41,6 +41,10 @@ Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.
 
+Fixed scalar array literals also use value materialisation when a cell, such
+as a density score, has no synchronous fixed value. Reference-only stochastic
+arrays retain their joint-law derivation.
+
 ## Pipeline overview
 
 For shared matrix × sampled vector evaluation, IR reference provenance resolves
