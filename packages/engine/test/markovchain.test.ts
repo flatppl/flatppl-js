@@ -35,6 +35,23 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 60000;
 const ROOT_SEED    = 0xABCD;
 
+test('a helper step retains shared parameters through a chain constructor', async () => {
+  const ctx = makeCtx(`
+transition(previous, mean, rho, sigma) = Normal(mean + rho * (previous - mean), sigma)
+step(previous, p) = transition(previous, p.mean, p.rho, p.sigma)
+path(initial, n, p) = markovchain(step, initial, n, p)
+ld = logdensityof(path(0.3, 3, record(mean=1.2, rho=-0.6, sigma=0.7)), [0.2, -0.4, 0.7])
+`, 1);
+  let expected = 0, previous = 0.3;
+  for (const value of [0.2, -0.4, 0.7]) {
+    const mean = 1.2 - 0.6 * (previous - 1.2);
+    expected -= Math.log(0.7) + 0.5 * Math.log(2 * Math.PI)
+      + 0.5 * ((value - mean) / 0.7) ** 2;
+    previous = value;
+  }
+  assert.ok(Math.abs((await ctx.getMeasure('ld')).samples[0] - expected) < 1e-12);
+});
+
 test('inferred drift and scale are supplied through one chain parameter record', async () => {
   const ctx = makeCtx(`
 drift ~ Normal(0, 1)

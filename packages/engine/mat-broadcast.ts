@@ -386,6 +386,17 @@ function _mapKernelParamRefs(
     if (idx < 0) return expr;
     return rewrite(expr, idx);
   }
+  if (expr.kind === 'call' && expr.op === 'let') {
+    const bound = new Set<string>();
+    const walk = (value: any): any => _mapKernelParamRefs(value, params,
+      (ref: any, idx: number) => bound.has(ref.name) ? ref : rewrite(ref, idx));
+    const assigns = expr.assigns.map((assign: any) => {
+      const value = walk(assign.value);
+      bound.add(assign.name);
+      return { ...assign, value };
+    });
+    return { ...expr, assigns, body: walk(expr.body) };
+  }
   if (expr.kind === 'call') {
     const out: any = { kind: 'call' };
     if (expr.op) out.op = expr.op;
