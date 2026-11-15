@@ -1933,23 +1933,34 @@ function _installParamChecks(registry: Record<string, any>) {
   for (const [kernel, entry] of Object.entries(registry)) {
     if (!paramDomains.hasDeclaredSets(kernel)) continue;
     const names: string[] = entry.params;
-    const check = (params: any[]) => paramDomains.checkParams(kernel, names, params);
+    const check = (params: any[]) => {
+      let numeric = params;
+      // §07 scalar results (dot products, determinants, etc.) may retain a
+      // rank-zero Value internally. Numeric kernel routines need its number.
+      // Keep collections whole: only explicit broadcast iterates their axes.
+      for (let i = 0; i < params.length; i++) {
+        const value = params[i];
+        if (valueLib.isValue(value) && value.shape.length === 0 && !value.im) {
+          if (numeric === params) numeric = params.slice();
+          numeric[i] = valueLib.asScalar(value);
+        }
+      }
+      paramDomains.checkParams(kernel, names, numeric);
+      return numeric;
+    };
     const logpdf = entry.logpdfFn;
     const checkedLogpdf: any = function (x: any, ...params: any[]) {
-      check(params);
-      return logpdf(x, ...params);
+      return logpdf(x, ...check(params));
     };
     if (typeof logpdf.factory === 'function') {
       checkedLogpdf.factory = (...params: any[]) => {
-        check(params);
-        return logpdf.factory(...params);
+        return logpdf.factory(...check(params));
       };
     }
     entry.logpdfFn = checkedLogpdf;
     const Ctor = entry.Ctor;
     const CheckedCtor: any = function (this: any, ...params: any[]) {
-      check(params);
-      return new Ctor(...params);
+      return new Ctor(...check(params));
     };
     CheckedCtor.prototype = Ctor.prototype;
     entry.Ctor = CheckedCtor;
@@ -1966,20 +1977,18 @@ function _installParamChecks(registry: Record<string, any>) {
           // A parametric sampler takes its parameters at each draw.
           const draw = randFn.factory(...args);
           return (...drawParams: any[]) => {
-            check(drawParams);
-            return draw(...drawParams);
+            return draw(...check(drawParams));
           };
         }
-        check(params);
-        return randFn.factory(...args);
+        const numeric = check(params);
+        return options ? randFn.factory(...numeric, last) : randFn.factory(...numeric);
       }, writable: true, configurable: true, enumerable: true });
       entry.randFn = checkedRand;
     }
     const randN = entry.randNFn;
     if (typeof randN === 'function') {
       entry.randNFn = (state: any, params: any[], n: number, out?: Float64Array) => {
-        check(params);
-        return randN(state, params, n, out);
+        return randN(state, check(params), n, out);
       };
     }
   }
