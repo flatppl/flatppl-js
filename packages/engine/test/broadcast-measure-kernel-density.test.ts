@@ -24,6 +24,44 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ctxFor } = require('./_ctx-factory.ts');
 
+test('table-row kernels score whole predictor vectors and nested row fields', async () => {
+  const { ctx } = ctxFor(`
+data = table(x = [[1.0, 2.0], [3.0, 4.0]], noise = table(sigma = [0.5, 2.0]))
+K(row, offset) = Normal(offset + sum(row.x), row.noise.sigma)
+y ~ K.(data, 0.5)
+score = logdensityof(lawof(y), [4.0, 6.5])
+`, 1);
+  const m = await ctx.getMeasure('score');
+  // Means 3.5 and 7.5, residuals 0.5 and -1, scales 0.5 and 2.
+  const expected = -Math.log(2 * Math.PI) - 0.5 * (1 + 0.25);
+  assert.ok(Math.abs((m.samples ?? m.value.data)[0] - expected) < 1e-12);
+});
+
+test('a sole table binds kernel and distribution inputs by column name', async () => {
+  for (const head of ['Normal', 'K']) {
+    const { ctx } = ctxFor(`
+K(mu, sigma) = Normal(mu, sigma)
+data = table(sigma = [0.5, 2.0], mu = [3.5, 7.5])
+y ~ ${head}.(data)
+score = logdensityof(lawof(y), [4.0, 6.5])
+`, 1);
+    const m = await ctx.getMeasure('score');
+    const expected = -Math.log(2 * Math.PI) - 0.5 * (1 + 0.25);
+    assert.ok(Math.abs((m.samples ?? m.value.data)[0] - expected) < 1e-12, head);
+  }
+});
+
+test('table-row kernel draws preserve rows and expand singleton row axes', async () => {
+  for (const [model, expected] of [
+    ['K(row, offset) = Dirac(sum(row.x) + offset)\ny ~ K.(table(x = [[1.0, 2.0]]), [0.0, 10.0])', [3, 13]],
+    ['K(mu, offset) = Dirac(mu + offset)\ny ~ K.(table(offset = [1.0, 2.0], mu = [3.0, 4.0]))', [4, 6]],
+  ] as Array<[string, number[]]>) {
+    const { ctx } = ctxFor(model, 2);
+    const m = await ctx.getMeasure('y');
+    assert.deepEqual(Array.from(m.value.data), [...expected, ...expected]);
+  }
+});
+
 const LAM = 50.0;
 const S_MU = 5.0;
 const S_SIGMA = 0.5;

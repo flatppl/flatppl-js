@@ -3476,6 +3476,7 @@ function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
   const atom = (i: number) => (!batched ? v : valueLib.isValue(v) ? valueLib._sliceRow(v, i) : v[i]);
   const first = atom(0);
   const axesOf = (x: any): number[] => {
+    if (x?.__table__ === true) return [x.nrows];
     if (valueLib.isValue(x)) {
       const levels = valueLib.levelAxesOf(x);
       return levels.length ? x.shape.slice(0, levels[0]) : x.shape.slice();
@@ -3486,6 +3487,7 @@ function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
   if (axes.length === 0) return { axes, accessor: (i) => atom(i) };
   const cellOf = (x: any, j: number) => {
     // Size-1 axes repeat (stride 0), so j already folds them away.
+    if (x?.__table__ === true) return valueLib.tableRow(x, j);
     if (Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined) return x[j];
     const dense = valueLib._logicalDense(x);
     const cellShape = dense.shape.slice(axes.length);

@@ -913,6 +913,10 @@ log` is the record. What survives as standing knowledge:
 
 ## Broadcast / aggregate dissolution (JS-engine specifics)
 
+Kernel broadcasts traverse tables by row in sampling and density, preserving
+vector fields and nested records. A sole table passed to a kernel that cannot
+accept one positional input lowers to named column operands in `lift.ts`.
+
 Zero-axis `locscale` broadcasts over a scalar-variate measure lower in lift to
 the ordinary scalar affine `pushfwd`, retaining live scalar shift/scale inputs.
 The measure operand is held constant (§04); a measure's variate axes never
