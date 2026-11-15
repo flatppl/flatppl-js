@@ -162,6 +162,16 @@ test('Gamma and Beta regression densities retain finite endpoint limits', () => 
   near(score('BetaLogitGLM', { x, beta, alpha: L, precision: 1.5 }, [0]), -L);
 });
 
+test('an aliased regression law composes with iid as a vector measure', async () => {
+  const { ctx } = makeMatCtx(`
+reg = standard_module("regression", "0.1")
+G = reg.NormalGLM
+M = iid(G(rowstack([[1.0], [2.0]]), 0.0, [1.0], 1.0), 2)
+lp = logdensityof(M, [[1.0, 2.0], [1.0, 2.0]])
+`, { sampleCount: 2 });
+  for (const lp of (await ctx.getMeasure('lp')).samples) near(lp, -2 * Math.log(2 * Math.PI));
+});
+
 test('constructor aliases and outer broadcasts preserve whole matrix and vector cells', async () => {
   const { ctx } = makeMatCtx(`
 reg = standard_module("regression", "0.1")
