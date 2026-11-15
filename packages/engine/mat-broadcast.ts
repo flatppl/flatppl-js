@@ -102,6 +102,9 @@ function matKernelBroadcast(name: string, d0: DerivationKernelBroadcast, ctx: an
     kwargIRs: d0.kwargIRs
       ? Object.fromEntries(Object.entries(d0.kwargIRs).map(([k, ir]) => [k, inline(ir)])) : d0.kwargIRs,
   };
+  if (require('./regression.ts').NAMES.has(d.distOp)) {
+    return require('./mat-regression.ts').broadcast(name, d, ctx);
+  }
   // Phase 5.1 Session 4: bare vector-output dist case (MvNormal etc.).
   // These distributions sit OUTSIDE the worker's scalar-only sampleN
   // REGISTRY (engine-concepts §22.2(a)); we per-cell dispatch through

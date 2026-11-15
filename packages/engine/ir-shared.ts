@@ -874,6 +874,12 @@ const EVALUABLE_OPS = new Set([
  */
 function normalizeMeasureIR(ir: IRNode | null | undefined, bindings: any): IRNode | null | undefined {
   if (!ir || ir.kind !== 'call') return ir;
+  const member = ir.target && bindings
+    && require('./standard-modules.ts').standardModuleBinding(ir, bindings, 'ir');
+  if (member?.kind === 'distribution' && require('./regression.ts').NAMES.has(member.op)) {
+    return { kind: 'call', op: member.op, args: ir.args, kwargs: ir.kwargs,
+      moduleDistribution: true, loc: ir.loc };
+  }
   if (ir.op === 'lawof'
       && Array.isArray(ir.args) && ir.args.length === 1
       && (!ir.kwargs || Object.keys(ir.kwargs).length === 0)) {

@@ -179,6 +179,8 @@ function _paramAsMatrix(v: any, kernelName: string, paramName: string): any {
 // log-density.
 
 const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
+  ...Object.fromEntries([...require('./regression.ts').NAMES].map((name: string) =>
+    [name, (x: any, kw: any) => require('./regression.ts').prepare(name, kw).score(x)])),
 
   // MvNormal(mu, cov) — n-variate normal.
   //
@@ -816,6 +818,8 @@ const MV_VARIATE_SHAPE: Record<string, {
   kind: 'vector' | 'matrix';
   sizeFrom: (kw: any) => number;
 }> = {
+  ...Object.fromEntries([...require('./regression.ts').NAMES].map((name: string) =>
+    [name, { kind: 'vector', sizeFrom: (kw: any) => valueLib.asValue(kw.x).shape[0] }])),
   MvNormal:             { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.mu) },
   Dirichlet:            { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.alpha) },
   Multinomial:          { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.p) },

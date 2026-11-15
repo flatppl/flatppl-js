@@ -181,7 +181,8 @@ function totalMassExpr(ir: any): any {
   }
   // A probability-measure leaf has total mass 1, and so does a §04 kernel
   // broadcast of one: an independent product of probability measures.
-  if (orchestrator.SAMPLEABLE_DISTRIBUTIONS && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
+  if ((orchestrator.SAMPLEABLE_DISTRIBUTIONS && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(op))
+      || require('./regression.ts').NAMES.has(op)) {
     return { kind: 'lit', value: 1 };
   }
   if (isProbabilityBroadcast(ir)) return { kind: 'lit', value: 1 };

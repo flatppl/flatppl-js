@@ -72,4 +72,36 @@ function cellToCoord(cell: number, axes: number[]) {
   return c;
 }
 
-module.exports = { resolveBroadcastAxes, coordToOffset, cellToCoord };
+/** Select one existing §04 collection cell without consuming its inner axes. */
+function cellAccessor(v: any, usesAtom: boolean, N: number): {
+  axes: number[]; accessor: (i: number, j: number) => any;
+} {
+  const V = require('./value.ts');
+  const batched = usesAtom && (V.isAtomBatched(v, N) || (Array.isArray(v) && v.length === N));
+  const atom = (i: number) => (!batched ? v : V.isValue(v) ? V._sliceRow(v, i) : v[i]);
+  const first = atom(0);
+  const axesOf = (x: any): number[] => {
+    if (x?.__table__ === true) return [x.nrows];
+    if (V.isValue(x)) {
+      const levels = V.levelAxesOf(x);
+      return levels.length ? x.shape.slice(0, levels[0]) : x.shape.slice();
+    }
+    return Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined ? [x.length] : [];
+  };
+  const axes = axesOf(first);
+  if (axes.length === 0) return { axes, accessor: (i) => atom(i) };
+  const cellOf = (x: any, j: number) => {
+    if (x?.__table__ === true) return V.tableRow(x, j);
+    if (Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined) return x[j];
+    const dense = V._logicalDense(x);
+    const cellShape = dense.shape.slice(axes.length);
+    const size = cellShape.reduce((a: number, b: number) => a * b, 1);
+    if (cellShape.length === 0) return dense.data[j];
+    const cell: any = { shape: cellShape, data: dense.data.subarray(j * size, (j + 1) * size) };
+    return V.setLevels(cell, V.levelAxesOf(dense).slice(1));
+  };
+  if (!batched) return { axes, accessor: (_i, j) => cellOf(first, j) };
+  return { axes, accessor: (i, j) => cellOf(atom(i), j) };
+}
+
+module.exports = { resolveBroadcastAxes, coordToOffset, cellToCoord, cellAccessor };

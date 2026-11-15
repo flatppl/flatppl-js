@@ -2047,7 +2047,8 @@ function _peelAliasNormalize(name: string, derivations: any): any {
 // materialiser-level twin of sampler.ts's `_isProvablyNormalized` leaf case.
 function _isLeafDistributionDeriv(d: any): boolean {
   return !!(d && d.distIR && d.distIR.kind === 'call'
-    && samplerReg.isKnownDistribution(d.distIR.op));
+    && (samplerReg.isKnownDistribution(d.distIR.op)
+      || require('./regression.ts').NAMES.has(d.distIR.op)));
 }
 
 function matRandSample(name: string, d: any, ctx: any) {
@@ -3387,6 +3388,7 @@ const KIND_HANDLERS = {
     .then((m: any) => transforms.relabelMeasure(m, d.names)),
   // multivariate distributions (mat-multivariate.ts)
   mvnormal:     (name: any, d: any, ctx: any) => multivariate.matMvNormal(name, d, ctx),
+  regression:   (name: any, d: any, ctx: any) => require('./mat-regression.ts').materialise(name, d, ctx),
   dirichlet:    (name: any, d: any, ctx: any) => multivariate.matDirichlet(name, d, ctx),
   multinomial:  (name: any, d: any, ctx: any) => multivariate.matMultinomial(name, d, ctx),
   wishart:           (name: any, d: any, ctx: any) => multivariate.matWishart(name, d, ctx),

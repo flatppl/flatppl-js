@@ -1610,7 +1610,8 @@ function inlineMeasureRefs(ir: any, opts: any): any {
 const NON_PROBABILITY_LEAVES = new Set(['ContinuedPoisson']);
 // Walker-handled multivariate / point-process leaves; all probability measures.
 const PROBABILITY_WALKER_LEAVES = new Set(['MvNormal', 'Dirichlet', 'Multinomial',
-  'BinnedPoissonProcess', 'PoissonProcess', 'Wishart', 'InverseWishart', 'LKJ', 'LKJCholesky']);
+  'BinnedPoissonProcess', 'PoissonProcess', 'Wishart', 'InverseWishart', 'LKJ', 'LKJCholesky',
+  ...require('./regression.ts').NAMES]);
 
 function isProbabilityLeaf(ir: any): boolean {
   const name = ir.op;
@@ -3279,15 +3280,17 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // in the shared REGISTRY regardless of its spec §09 module membership.
   // Gated on isKnownDistribution so a module FUNCTION ref can never be
   // mistaken for a kernel head.
-  else if (hd && hd.kind === 'ref' && hd.name && samplerLib.isKnownDistribution(hd.name)) kernelName = hd.name;
+  else if (hd && hd.kind === 'ref' && hd.name && (samplerLib.isKnownDistribution(hd.name)
+      || require('./regression.ts').NAMES.has(hd.name))) kernelName = hd.name;
   else if (hd && hd.kind === 'lit' && typeof hd.value === 'string') kernelName = hd.value;
   // Reuse the general per-cell kernel walker for vector/matrix-valued leaves.
   if (kernelName && (OP_HANDLERS as any)[kernelName] === walkMultivariate
-      && Object.keys((ir as any).kwargs || {}).length === 0) {
-    const params = args.slice(1).map((_x: any, i: number) => '__broadcast_arg' + i);
+      && (require('./regression.ts').NAMES.has(kernelName) || Object.keys((ir as any).kwargs || {}).length === 0)) {
+    const names = require('./regression.ts').PARAMS[kernelName];
+    const params = names || args.slice(1).map((_x: any, i: number) => '__broadcast_arg' + i);
     const body = { kind: 'call', op: kernelName,
       args: params.map((name: string) => ({ kind: 'ref', ns: '%local', name })) };
-    return walkKernelBroadcastMeasureKernel(ir, { params, body }, value, refArrays, N, opts, acc, baseEnv, overlay);
+    return walkKernelBroadcastMeasureKernel(ir, { params, paramKwargs: params, body }, value, refArrays, N, opts, acc, baseEnv, overlay);
   }
   if (!kernelName || !samplerLib.isKnownDistribution(kernelName)) {
     // A user-kernel head (not a built-in distribution) reaching the density
@@ -3472,32 +3475,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
 function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
   axes: number[]; accessor: (i: number, j: number) => any;
 } {
-  const batched = usesAtom && (valueLib.isAtomBatched(v, N) || (Array.isArray(v) && v.length === N));
-  const atom = (i: number) => (!batched ? v : valueLib.isValue(v) ? valueLib._sliceRow(v, i) : v[i]);
-  const first = atom(0);
-  const axesOf = (x: any): number[] => {
-    if (x?.__table__ === true) return [x.nrows];
-    if (valueLib.isValue(x)) {
-      const levels = valueLib.levelAxesOf(x);
-      return levels.length ? x.shape.slice(0, levels[0]) : x.shape.slice();
-    }
-    return Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined ? [x.length] : [];
-  };
-  const axes = axesOf(first);
-  if (axes.length === 0) return { axes, accessor: (i) => atom(i) };
-  const cellOf = (x: any, j: number) => {
-    // Size-1 axes repeat (stride 0), so j already folds them away.
-    if (x?.__table__ === true) return valueLib.tableRow(x, j);
-    if (Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined) return x[j];
-    const dense = valueLib._logicalDense(x);
-    const cellShape = dense.shape.slice(axes.length);
-    const size = cellShape.reduce((a: number, b: number) => a * b, 1);
-    if (cellShape.length === 0) return dense.data[j];
-    const cell: any = { shape: cellShape, data: dense.data.subarray(j * size, (j + 1) * size) };
-    return valueLib.setLevels(cell, valueLib.levelAxesOf(dense).slice(1));
-  };
-  if (!batched) return { axes, accessor: (_i, j) => cellOf(first, j) };
-  return { axes, accessor: (i, j) => cellOf(atom(i), j) };
+  return bcAxes.cellAccessor(v, usesAtom, N);
 }
 
 // Split a broadcast variate into its cells along `axes`, row-major, leaving
@@ -4192,6 +4170,7 @@ const OP_HANDLERS = {
   //       walkMultivariate per-atom tests). Retiring (b) is 5h-B scope
   //       (teach the composite recognizers the lowered pushfwd form).
   MvNormal:             walkMultivariate,
+  ...Object.fromEntries([...require('./regression.ts').NAMES].map((name: string) => [name, walkMultivariate])),
   Dirichlet:            walkMultivariate,
   Multinomial:          walkMultivariate,
   BinnedPoissonProcess: walkBinnedPoissonProcess,

@@ -37,6 +37,10 @@ Binned scalar interval masses use `forward-cdf.ts`'s `logIntervalProbability`.
 Exponential and shape-one Gamma tails stay logarithmic through normalization;
 other scalar laws retain the CDF/survival difference path.
 
+`regression.ts` owns the ten §09 GLM numeric kernels. `mat-regression.ts`
+binds live matrices and shared parameters. Each constructor returns one vector
+law, with explicit ordinary outer broadcasting.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.
