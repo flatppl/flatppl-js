@@ -397,7 +397,7 @@ const ALL_DERIVATION_KINDS = new Set([
   'truncate', 'pushfwd', 'relabel', 'bayesupdate', 'logdensityof', 'likelihood_density',
   'joint_likelihood_density', 'posterior_density', 'posterior_density_tree',
   'totalmass', 'broadcast_logdensity', 'select', 'kernelbroadcast',
-  'mvnormal', 'dirichlet', 'multinomial', 'wishart', 'inversewishart',
+  'mvnormal', 'regression', 'dirichlet', 'multinomial', 'wishart', 'inversewishart',
   'lkjcholesky', 'lkj', 'binnedpoissonprocess', 'poissonprocess',
 ]);
 // Kinds handled OUTSIDE KIND_HANDLERS (clmRerouteStage → matClm).

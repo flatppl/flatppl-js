@@ -801,6 +801,8 @@ function boolDistKwargs(kwargs: any) {
 // freshly-allocated type variables. Sharing a single signature object
 // across call sites would let one site's unification leak into another.
 const SIGNATURE_FACTORIES = {
+  ...Object.fromEntries([...require('./regression.ts').NAMES].map((name: string) =>
+    [name, () => require('./regression.ts').signature({ array, measure, REAL, INTEGER, BOOLEAN }, name)])),
   // ---- Distributions -----------------------------------------------
   // Scalar continuous: kwargs all real-typed, result is measure<real>.
   Normal:            () => realDistKwargs({ mu: REAL, sigma: REAL }),

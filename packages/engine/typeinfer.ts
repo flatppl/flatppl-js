@@ -584,8 +584,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (expr.target) return inferUserCall(expr, scopes);
 
     // A standard module's distribution call, marked by lower from the module
-    // entry's distribution set. Every §09 distribution has domain `reals`.
+    // entry's distribution set. Vector laws carry their declared signature.
     if (expr.moduleDistribution) {
+      if (require('./regression.ts').NAMES.has(expr.op)) return write(inferGenericCall(expr, scopes), expr);
       for (const a of expr.args || []) inferExpr(a, scopes);
       for (const k of Object.keys(expr.kwargs || {})) inferExpr(expr.kwargs[k], scopes);
       return write(T.measure(T.REAL), expr);
@@ -1296,6 +1297,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       s = next;
     }
     let result = T.substitute(sig.result, s);
+    if (require('./regression.ts').NAMES.has(op) && result.kind === 'measure') {
+      const x = kwargs.x || args[0];
+      const xt = x && inferExpr(x, scopes);
+      if (xt?.kind === 'array' && xt.rank === 2) result.domain.shape = [xt.shape[0]];
+      result.mass = T.MASS_NORMALIZED;
+    }
     if (tvectorIn != null && result && result.kind === 'array' && result.rank === 1) {
       result = T.tvector(result.shape[0] === '%dynamic' ? tvectorIn : result.shape[0], result.elem);
     }
@@ -5635,6 +5642,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferUserCall(expr: any, scopes: any): any {
     const head = expr.target;
     if (!head) return write(T.deferred(), expr);
+    const member = require('./standard-modules.ts').standardModuleBinding(expr, loweredModule.bindings, 'rhs');
+    if (member?.kind === 'distribution' && require('./regression.ts').NAMES.has(member.op)) {
+      return write(inferGenericCall({ ...expr, target: undefined, op: member.op }, scopes), expr);
+    }
     const local = head.ns === 'self';
     const reg = !local && loweredModule.moduleRegistry?.[head.ns];
     const calleeModule = local ? loweredModule : modules?.get(reg?.path)?.loweredModule;
@@ -6327,7 +6338,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           : vsLib.cartpow(elem, args.length);
       }
       default:
-        if (builtins.DISTRIBUTIONS.has(op)) {
+        if (builtins.DISTRIBUTIONS.has(op) || require('./regression.ts').NAMES.has(op)) {
           return distributionSupport(ir, {
             paramDim: _paramDim, resolveDim: _resolveDim, resolveSetRef: _resolveSetRef,
           });
@@ -6705,7 +6716,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return unknown;
       }
       default:
-        if (builtins.DISTRIBUTIONS.has(mIR.op)) {
+        if (builtins.DISTRIBUTIONS.has(mIR.op) || require('./regression.ts').NAMES.has(mIR.op)) {
           const set = _cellOf(distributionSupport(mIR, {
             paramDim: _paramDim, resolveDim: _resolveDim, resolveSetRef: _resolveSetRef,
           }));
@@ -7128,7 +7139,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // Every other distribution constructor — incl. Dirac, the named §08
     // distributions, and the Poisson processes (proper probability
     // measures over point configurations) — is normalized.
-    if (builtins.DISTRIBUTIONS.has(op)) return T.MASS_NORMALIZED;
+    if (builtins.DISTRIBUTIONS.has(op) || require('./regression.ts').NAMES.has(op)) return T.MASS_NORMALIZED;
 
     switch (op) {
       // Reification retains source mass so invalid draws cannot hide it.
@@ -8014,6 +8025,23 @@ function distributionSupport(
   },
 ): any {
   const op = ir.op;
+  if (require('./regression.ts').NAMES.has(op)) {
+    const n = ir.meta?.type?.domain?.shape?.[0] ?? '%dynamic';
+    let elem = op === 'BernoulliLogitGLM' ? vsLib.BOOLEANS
+      : op === 'GammaLogGLM' ? vsLib.NONNEGREALS
+      : op === 'BetaLogitGLM' ? vsLib.UNITINTERVAL
+      : op === 'CategoricalLogitGLM' || op === 'OrderedLogitGLM' ? vsLib.POSINTEGERS
+      : require('./regression.ts').DISCRETE.has(op) ? vsLib.NONNEGINTEGERS : vsLib.REALS;
+    if (op === 'BinomialLogitGLM') {
+      const trials = opts?.resolveDim?.(ir.kwargs?.n ?? ir.args?.[1]);
+      if (typeof trials === 'number') elem = vsLib.interval(0, trials);
+    } else if (op === 'CategoricalLogitGLM' || op === 'OrderedLogitGLM') {
+      const count = opts?.paramDim?.(ir, op === 'CategoricalLogitGLM' ? 'alpha' : 'cutpoints',
+        op === 'CategoricalLogitGLM' ? 1 : 2);
+      if (typeof count === 'number') elem = vsLib.interval(1, count + (op === 'OrderedLogitGLM' ? 1 : 0));
+    }
+    return vsLib.cartpow(elem, n);
+  }
   switch (op) {
     case 'Uniform': return vsLib.setExprValueset(
       supportArgOf(ir), opts && opts.resolveDim, opts && opts.resolveSetRef);

@@ -54,6 +54,11 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       const name = node.callee.name;
       if (name === 'lawof') return true;
       if (MEASURE_PRODUCING.has(name)) return true;
+      const alias = bindings.get(name)?.node?.value;
+      if (!seen.has(name) && (alias?.type === 'FieldAccess' || alias?.type === 'Identifier')) {
+        const next = new Set(seen); next.add(name);
+        if (isMeasureExpr({ ...node, callee: alias }, bindings, next)) return true;
+      }
       // `broadcast` is dual (spec §04 "Stochastic broadcast"):
       // `broadcast(f, …)` over a value function is an array VALUE, but
       // `broadcast(K, …)` over a distribution/kernel is an array-valued
@@ -65,6 +70,7 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       // and the whole iid binding goes unclassified.
       if (name === 'broadcast' && Array.isArray(node.args) && node.args.length >= 1) {
         const k = node.args[0];
+        if (isMeasureExpr({ type: 'CallExpr', callee: k, args: [] }, bindings, new Set(seen))) return true;
         if (k && k.type === 'Identifier'
             && DISTRIBUTIONS.has(k.name) && !bindings.has(k.name)) {
           return true;

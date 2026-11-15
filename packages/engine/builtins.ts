@@ -217,7 +217,8 @@ const PARTICLE_PHYSICS_DISTRIBUTIONS: ReadonlySet<string> = new Set([
   'CrystalBall', 'DoubleSidedCrystalBall', 'Argus', 'RelativisticBreitWigner',
   'Voigtian', 'Landau', 'BifurcatedNormal', 'ContinuedPoisson',
 ]);
-const FLATPDL_KERNEL_TAGS = new Set([...DISTRIBUTIONS, ...PARTICLE_PHYSICS_DISTRIBUTIONS]);
+const REGRESSION_DISTRIBUTIONS: ReadonlySet<string> = require('./regression.ts').NAMES;
+const FLATPDL_KERNEL_TAGS = new Set([...DISTRIBUTIONS, ...PARTICLE_PHYSICS_DISTRIBUTIONS, ...REGRESSION_DISTRIBUTIONS]);
 
 // Measure algebra operations
 const MEASURE_OPS = new Set([
@@ -310,7 +311,7 @@ function isReserved(name: string) {
 module.exports = {
   CONSTANTS, BOOL_LITERALS, SETS, SET_CONSTRUCTORS,
   RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_OPERATIONS,
-  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS, PARTICLE_PHYSICS_DISTRIBUTIONS,
+  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS, PARTICLE_PHYSICS_DISTRIBUTIONS, REGRESSION_DISTRIBUTIONS,
   MEASURE_OPS, MEASURE_PRODUCING, ALL_KNOWN,
   isKnownName, isConstant, isBoolLiteral, isSet, isSpecialOperation, isReserved,
 };

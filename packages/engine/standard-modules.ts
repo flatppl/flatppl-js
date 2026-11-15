@@ -780,6 +780,13 @@ function _registerBuiltinStandardModules() {
   _registerPolynomials();
   registerStandardModule(require('./standard-splines.ts').splinesModule());
   _registerParticlePhysics();
+  const regression = require('./regression.ts');
+  registerStandardModule({ name: 'regression', compat: '0.1',
+    bindings: new Map([...regression.NAMES].map((name: string) => {
+      const sig = regression.signature(T, name);
+      return [name, { kind: 'distribution' as const, op: name,
+        sig: T.kernelType(Object.entries(sig.kwargs).map(([name, type]) => ({ name, type })), sig.result) }];
+    })), distributions: regression.NAMES });
   registerStandardModule(require('./standard-pyhf.ts').pyhfModule(_interpPoly6Exp, _interpPoly6Lin));
   _registerExtLinearAlgebra();
   _registerSpecialFunctions();

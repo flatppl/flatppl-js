@@ -4400,6 +4400,22 @@ function walkDirichlet(state: any, ir: IRNode, env: any, ctx: any): any {
   return { value: { shape: [K], data: x }, state };
 }
 
+function walkRegression(state: any, ir: any, env: any, ctx: any): any {
+  state = fillEnvFromRefs(state, ir, env, ctx);
+  const regression = require('./regression.ts');
+  const paramsIR = regression.bind(ir.op, ir.args, ir.kwargs);
+  const params: Record<string, any> = {};
+  for (const key of regression.PARAMS[ir.op]) params[key] = evaluateExpr(paramsIR[key], env);
+  const kernel = regression.prepare(ir.op, params);
+  const prng = makePhiloxPrngAdapter(state);
+  const factories: Record<string, any> = {};
+  const draw = (name: string, ...args: number[]) => {
+    factories[name] ||= REGISTRY[name].randFn.factory({ prng });
+    return factories[name](...args);
+  };
+  return { value: kernel.sample(draw, prng), state: prng.getState() };
+}
+
 function walkMultinomial(state: any, ir: IRNode, env: any, ctx: any): any {
   state = fillEnvFromRefs(state, ir, env, ctx);
   const n = _countParam(_kernelParam(ir, 'Multinomial', 'n', 0, env), 'Multinomial', 'n', 0);
@@ -4719,7 +4735,7 @@ function _isProvablyNormalized(ir: any, ctx: any): boolean {
   }
   if (!ir || ir.kind !== 'call') return false;
   // Every leaf distribution constructor is normalized (spec §08).
-  if (isKnownDistribution(ir.op)) return true;
+  if (isKnownDistribution(ir.op) || require('./regression.ts').NAMES.has(ir.op)) return true;
   // normalize(...)'s own result is always normalized once it type-checked
   // (spec §06: Z = totalmass(M), the result is M/Z) — so a nested
   // normalize is trivially already normalized.
@@ -4864,6 +4880,7 @@ function _applyUnary(fIR: any, x: any, env: any): any {
 }
 
 const MEASURE_OP_WALKERS = {
+  ...Object.fromEntries([...require('./regression.ts').NAMES].map((name: string) => [name, walkRegression])),
   joint:       walkJoint,
   record:      walkRecord,
   iid:         walkIid,

@@ -129,6 +129,7 @@ const { engineLimitation } = require('./limitations.ts');
 // `mvnormal` is the refusal channel for an MvNormal the lift did not lower to
 // `pushfwd(affine, iid(Normal, D))`.
 const LEAF_DISTRIBUTION_KINDS: Record<string, string> = {
+  ...Object.fromEntries([...require('./regression.ts').NAMES].map((name: string) => [name, 'regression'])),
   MvNormal: 'mvnormal',
   Dirichlet: 'dirichlet',
   Multinomial: 'multinomial',
@@ -2625,6 +2626,12 @@ function classifyRandSample(
 function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationKernelBroadcast | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
   const k = rhsIR.args[0];
+  const moduleKernel = k?.kind === 'ref' && require('./standard-modules.ts').standardModuleBinding(
+    { kind: 'call', target: k }, bindings, 'ir');
+  if (moduleKernel?.kind === 'distribution' && require('./regression.ts').NAMES.has(moduleKernel.op)) {
+    return { kind: 'kernelbroadcast', distOp: moduleKernel.op,
+      argIRs: rhsIR.args.slice(1), kwargIRs: rhsIR.kwargs || null };
+  }
   if (!k || k.kind !== 'ref' || k.ns !== 'self') return null;
   // Bare distribution-constructor kernel, not shadowed by a binding.
   const isBareDist = SAMPLEABLE_DISTRIBUTIONS.has(k.name) && !bindings.has(k.name);
@@ -4880,7 +4887,8 @@ function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
     return resolved ? support.logVolume(resolved) : null;
   }
   if (op === 'superpose' && ir.args?.length === 0) return -Infinity;
-  if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
+  if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)
+      || require('./regression.ts').NAMES.has(op)) return 0;
   if (require('./normalize-mass.ts').isProbabilityBroadcast(ir)) return 0;
   if (op === 'normalize' || op === 'tilt') return 0;
   // The image of the whole target space has the base measure's mass,
@@ -5175,6 +5183,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
       }
       case 'lebesgue': return d.measureIR;
       case 'mvnormal':
+      case 'regression':
         // Multivariate sampleable distribution. Same
         // treatment as 'sample': return the IR verbatim; the density
         // walker has a dedicated handler keyed on the op name
@@ -5803,7 +5812,12 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // worked only when callers passed `bindings` — a silent
         // dependency that bit kernel-broadcast expansion in
         // kernel-body density paths.
-        const head: any = { kind: 'ref', ns: 'self', name: d.distOp };
+        const regression = require('./regression.ts');
+        const names = regression.PARAMS[d.distOp];
+        const head: any = names ? { kind: 'call', op: 'functionof', params: names, paramKwargs: names,
+          body: { kind: 'call', op: d.distOp, moduleDistribution: true,
+            args: names.map((name: string) => ({ kind: 'ref', ns: '%local', name })) } }
+          : { kind: 'ref', ns: 'self', name: d.distOp };
         const ir: any = { kind: 'call', op: 'broadcast', args: [head] };
         if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
           ir.kwargs = Object.assign({}, d.kwargIRs);

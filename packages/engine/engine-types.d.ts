@@ -269,6 +269,7 @@ export type DerivationKind =
   | 'select'
   | 'kernelbroadcast'
   | 'mvnormal'
+  | 'regression'
   | 'dirichlet'
   | 'multinomial'
   | 'wishart'
@@ -726,6 +727,12 @@ export interface DerivationDirichlet {
   distIR: IRNode;
 }
 
+export interface DerivationRegression {
+  kind: 'regression';
+  name?: string;
+  distIR: IRNode;
+}
+
 /** Multinomial(n, p) — atom is a length-K integer count vector. */
 export interface DerivationMultinomial {
   kind: 'multinomial';
@@ -810,6 +817,7 @@ export type Derivation =
   | DerivationMvNormal
   | DerivationDirichlet
   | DerivationMultinomial
+  | DerivationRegression
   | DerivationWishart
   | DerivationInverseWishart
   | DerivationLKJCholesky
