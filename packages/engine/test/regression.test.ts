@@ -154,6 +154,14 @@ lp = logdensityof(lawof(record(a = a, beta = beta, y = y)), record(a = 0, beta =
   assert.deepEqual((await ctx.getMeasure('y')).value.shape, [2, 2]);
 });
 
+test('Gamma and Beta regression densities retain finite endpoint limits', () => {
+  const x = [[1]], beta = [0];
+  // Exponential mean 2, Beta(2,1) and Beta(1,1/2) have boundary densities 1/2, 2, 1/2.
+  near(score('GammaLogGLM', { x, beta, alpha: L, shape: 1 }, [0]), -L);
+  near(score('BetaLogitGLM', { x, beta, alpha: L, precision: 3 }, [1]), L);
+  near(score('BetaLogitGLM', { x, beta, alpha: L, precision: 1.5 }, [0]), -L);
+});
+
 test('constructor aliases and outer broadcasts preserve whole matrix and vector cells', async () => {
   const { ctx } = makeMatCtx(`
 reg = standard_module("regression", "0.1")
