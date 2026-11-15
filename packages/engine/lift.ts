@@ -1213,6 +1213,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
       astArg = inlineBroadcastKernelLift(astArg);
+      astArg = inlineTableKernelArguments(astArg);
       astArg = inlineNoCollectionBroadcast(astArg);
       astArg = inlineCollectionMeasureOpBroadcast(astArg);
     }
@@ -1250,6 +1251,25 @@ function liftInlineSubexpressions(bindings: any) {
     out.set(name, makeSyntheticBinding(name, kernel));
     return { type: 'CallExpr', callee: makeIdent('broadcast', loc), builtin: true,
       args: [makeIdent(name, loc), ...collections], loc };
+  }
+
+  // §04: a sole table binds a multi-input kernel by row field name. Expose
+  // the columns before sampling and density choose their execution paths.
+  function inlineTableKernelArguments(astArg: any) {
+    if (astArg?.type !== 'CallExpr' || astArg.callee?.name !== 'broadcast'
+        || astArg.args?.length !== 2 || astArg.args[1].type === 'KeywordArg') return astArg;
+    const [head, table] = astArg.args;
+    const iface = __knownAstType(head);
+    const type = __knownAstType(table);
+    if (iface?.kind !== 'kernel' || type?.kind !== 'table'
+        || require('./types.ts').acceptsPositional(iface, 1)) return astArg;
+    const decision = require('./builtin-param-names.ts').namedDecision(iface, Object.keys(type.columns));
+    if (!decision.order) return astArg;
+    return { ...astArg, args: [head, ...decision.order.map((name: string) => ({
+      type: 'KeywordArg', name,
+      value: { type: 'FieldAccess', object: cloneAst(table), field: name, loc: table.loc },
+      loc: table.loc,
+    }))] };
   }
 
   // §04 "Non-collection inputs": "If there are no collection arguments,
