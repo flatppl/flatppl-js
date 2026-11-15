@@ -101,6 +101,50 @@ test('valid parameters keep their closed-form values', () => {
   -Math.log(2 * Math.PI) - Math.log(2) - 1);
 });
 
+test('scalar dot products remain scalar parameters in density queries', async () => {
+  for (const query of [
+    'logdensityof(K([1.0, 2.0], [1.0, 0.5]), 3.0)',
+    'builtin_logdensityof(Normal, record(mu = mu, sigma = 1.0), 3.0)',
+  ]) {
+    const { ctx } = makeMatCtx(`
+K(x, b) = Normal(transpose(x) * b, 1.0)
+mu = transpose([1.0, 2.0]) * [1.0, 0.5]
+score = ${query}
+`, { sampleCount: 1 });
+    const m = await ctx.getMeasure('score');
+    // The dot product is 2, so log N(3; 2, 1) = -log(2 pi)/2 - 1/2.
+    const expected = -0.5 * Math.log(2 * Math.PI) - 0.5;
+    const actual = (m.samples ?? m.value.data)[0];
+    assert.ok(Number.isFinite(actual) && Math.abs(actual - expected) < 1e-12, query);
+  }
+});
+
+test('scalar array results preserve the sampling law and analytic parameters', async () => {
+  const { ctx } = makeMatCtx(`
+mu = transpose([1.0, 2.0]) * [1.0, 0.5]
+sigma = det(rowstack([[2.0, 0.0], [0.0, 1.0]]))
+sampled, state = rand(iid(Normal(mu, sigma), 4), rnginit(7))
+reference, reference_state = rand(iid(Normal(2.0, 2.0), 4), rnginit(7))
+`, { sampleCount: 1 });
+  const sampled = await ctx.getMeasure('sampled');
+  const reference = await ctx.getMeasure('reference');
+  assert.deepEqual(Array.from(sampled.value?.data ?? sampled.samples),
+    Array.from(reference.value?.data ?? reference.samples));
+  const analytical = sampler.makeAnalytical({ kind: 'call', op: 'Normal', args: [
+    { kind: 'lit', value: { shape: [], data: Float64Array.of(2) } },
+    { kind: 'lit', value: { shape: [], data: Float64Array.of(2) } },
+  ] }, {});
+  assert.equal(analytical.mean, 2);
+  assert.equal(analytical.variance, 4);
+  const scalar = (value: number) => ({ shape: [], data: Float64Array.of(value) });
+  const entry = sampler._internal.REGISTRY.Normal;
+  const prepared = entry.logpdfFn.factory(scalar(2), scalar(2));
+  const expected = -Math.log(2) - 0.5 * Math.log(2 * Math.PI) - 0.125;
+  assert.ok(Math.abs(prepared(3) - expected) < 1e-12);
+  const parametric = entry.randFn.factory({ prng: () => 0.25 });
+  assert.equal(parametric(scalar(2), scalar(2)), parametric(2, 2));
+});
+
 test('the walker, the sampler and the prepared factory raise the same error', async () => {
   const { ctx } = makeMatCtx('s = 1.0 - 3.0\nr = logdensityof(Normal(0, s), 0.5)', { sampleCount: 1 });
   await assert.rejects(() => ctx.getMeasure('r'), outside('Normal', 'sigma'));

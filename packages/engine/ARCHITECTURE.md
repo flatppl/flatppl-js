@@ -602,6 +602,9 @@ retain their existing capability checks.
 
 ## Cross-file invariants
 
+Numeric distribution entry points unwrap real rank-zero `Value` parameters
+before calling scalar routines. Array and table parameters retain their shape.
+
 Boundary inlining expands deterministic literal records and vectors through
 their fields to the declared inputs. It preserves draw references and measure
 constructors so shared stochastic identity survives density and profile lowering.
