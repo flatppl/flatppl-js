@@ -850,6 +850,18 @@ function _registerSpecialFunctions() {
   bindings.set('betainc', { kind: 'function', sig: T.funcType([
     { name: 'a', type: T.REAL }, { name: 'b', type: T.REAL }, { name: 'x', type: T.REAL },
   ], T.REAL), impl: (a: number, b: number, x: number) => require('./forward-cdf.ts').cdf('Beta', x, { alpha: a, beta: b }) });
+  const extensions = require('./special-functions.ts');
+  for (const [name, parameters] of [
+    ['gammaincc', ['a', 'x']], ['log_gammainc', ['a', 'x']], ['log_gammaincc', ['a', 'x']],
+    ['betaincc', ['a', 'b', 'x']], ['log_betainc', ['a', 'b', 'x']], ['log_betaincc', ['a', 'b', 'x']],
+    ['beta', ['a', 'b']], ['logbeta', ['a', 'b']],
+    ['bessel_i_scaled', ['v', 'z']], ['bessel_k_scaled', ['v', 'z']],
+    ['log_bessel_i', ['v', 'z']], ['log_bessel_k', ['v', 'z']], ['log_ndtr', ['x']],
+  ] as Array<[string, string[]]>) bindings.set(name, {
+    kind: 'function', impl: extensions[name],
+    sig: T.funcType(parameters.map(name => ({ name, type: T.REAL })),
+      name === 'bessel_i_scaled' ? T.COMPLEX : T.REAL),
+  });
   registerStandardModule({
     name: 'special-functions',
     compat: '0.1',
