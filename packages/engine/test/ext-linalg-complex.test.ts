@@ -65,10 +65,13 @@ R=f.P*A-f.L*f.U
 x=linsolve(f.L,[1.0,2.0,3.0])
 F=e.lu.([A,A])
 y=linsolve(F[1].L,[1.0,2.0,3.0])
+lower=fn(e.lu(_).L)
+z=linsolve(lower(A),[1.0,2.0,3.0])
 `, { sampleCount: 1 });
   close((await ctx.getMeasure('R')).samples, new Array(9).fill(0));
   close((await ctx.getMeasure('x')).samples, [1, 2, 5 / 3]);
   close((await ctx.getMeasure('y')).samples, [1, 2, 5 / 3]);
+  close((await ctx.getMeasure('z')).samples, [1, 2, 5 / 3]);
 });
 
 test('complex singular LU continues past a zero column and retains later pivots', async () => {

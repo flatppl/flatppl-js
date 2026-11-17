@@ -5716,28 +5716,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(T.failed('not callable'), expr);
     }
 
-    const result = checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg);
-    if (member?.realResult && result.kind !== 'failed') {
-      // Matrix decompositions preserve real outputs for real inputs, including
-      // integer matrices whose elimination produces fractions. A conservative
-      // complex signature validates both domains; this refinement keeps real
-      // consumers such as linsolve usable without weakening complex checks.
-      const realNumeric = (t: any): boolean => t?.kind === 'scalar'
-        ? ['boolean', 'integer', 'real'].includes(t.prim)
-        : t?.kind === 'array' ? realNumeric(t.elem)
-          : t?.kind === 'record' ? Object.values(t.fields).every(realNumeric)
-            : t?.kind === 'tuple' ? t.elems.every(realNumeric) : false;
-      const actuals = [...(expr.args || []), ...Object.values(expr.kwargs || {})];
-      if (actuals.length && actuals.every((a: any) => realNumeric(a?.__splatType || inferExpr(a, scopes)))) {
-        return write(member.realResult, expr);
-      }
-    }
-    return result;
+    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg, member?.realResult);
   }
 
   const reinferring = new Set<any>();
   function checkUserCall(expr: any, scopes: any, calleeType: any, callee: any,
-      calleeModule: any, local: boolean, reg: any): any {
+      calleeModule: any, local: boolean, reg: any, realResult?: any): any {
     const head = expr.target;
     // Check the available signature first. Direct reification bodies below
     // also receive the concrete argument types at this call site.
@@ -5837,6 +5821,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     // Positional first, then keyword. Spec allows both calling
     // conventions for user-defined callables with explicit boundaries.
+    // Specialize real-preserving numerical functions from the same normalized
+    // input types used for validation, after tuple/record splats. This also
+    // promotes integer matrices to real outputs when elimination has fractions.
+    const realNumeric = (t: any): boolean => t.kind === 'scalar'
+      ? ['boolean', 'integer', 'real'].includes(t.prim)
+      : t.kind === 'array' ? realNumeric(t.elem) : false;
+    let realInputs = Boolean(realResult);
     for (let i = 0; i < inputs.length; i++) {
       const inp = inputs[i];
       let actual: any = null, actualLoc = expr.loc;
@@ -5863,8 +5854,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           message: 'call to "' + head.name + '" missing argument "' + inp.name + '"',
           loc: expr.loc,
         });
+        realInputs = false;
         continue;
       }
+      if (realInputs) realInputs = realNumeric(actual);
       if (actual && actual.kind !== 'failed') {
         const s = T.unify(inp.type, actual, new Map());
         if (s == null) {
@@ -5963,7 +5956,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return write(polymorphic, expr);
       }
     }
-    return write(calleeType.result, expr);
+    return write(realInputs ? realResult : calleeType.result, expr);
   }
 
   // -------------------------------------------------------------------
