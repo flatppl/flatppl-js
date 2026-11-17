@@ -67,7 +67,12 @@ descriptors specialize real-preserving results when all inputs are real.
 
 Economy SVD supports tall/wide real and complex matrices, including null-space
 completion. The complex Jacobi path in `complex-svd.ts` scales columns separately
-and certifies unitary factors; `lstsq` and `rank` share the same singular values.
+and certifies unitary factors. `lstsq`, `rank` and `pinv` share the strict
+`max(atol,rtol*smax)` cutoff; `cond` uses the untruncated spectral ratio.
+`ext-linalg-solves.ts` substitutes against ordinary LU records and Cholesky
+triangles without refactorization, preserving vector or matrix RHS rank.
+`eigh` reuses real symmetric Jacobi and adds phase-aware Hermitian rotations
+in `hermitian-eigen.ts`; `eigvalsh` omits the vector accumulator.
 
 Complex matrix exponentials use the real block representation of a complex
 linear map, sharing the existing real Padé13 scaling-and-squaring solver.
