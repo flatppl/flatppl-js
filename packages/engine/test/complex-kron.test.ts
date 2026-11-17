@@ -19,7 +19,14 @@ R=e.kron(rowstack([[1,2]]),B)
 S=e.kron(A,rowstack([[1,2]]))
 H=e.kron(adjoint(A),B)
 realK=e.kron(rowstack([[1,0],[0,2]]),rowstack([[3]]))
-x=linsolve(realK,[3.0,12.0])`, { sampleCount: 1 });
+x=linsolve(realK,[3.0,12.0])
+pair=(rowstack([[1,0],[0,2]]),rowstack([[3]]))
+tupleK=e.kron(pair)
+directK=e.kron((rowstack([[1,0],[0,2]]),rowstack([[3]])))
+recordK=e.kron(record(A=rowstack([[1,0],[0,2]]),B=rowstack([[3]])))
+tx=linsolve(tupleK,[3.0,12.0])
+dx=linsolve(directK,[3.0,12.0])
+rx=linsolve(recordK,[3.0,12.0])`, { sampleCount: 1 });
   // Hand multiplication of each A_ij into the whole B row.
   const k = await ctx.getMeasure('K');
   assert.deepEqual(k.intrinsicShape, [2, 4]);
@@ -32,6 +39,7 @@ x=linsolve(realK,[3.0,12.0])`, { sampleCount: 1 });
   close((await ctx.getMeasure('H')).samples, [1, 0, 0, 3, 2, 6, 0, 0]);
   close((await ctx.getMeasure('H')).imag, [-1, -3, 2, 3, 2, 0, 0, 0]);
   close((await ctx.getMeasure('x')).samples, [1, 2]);
+  for (const name of ['tx', 'dx', 'rx']) close((await ctx.getMeasure(name)).samples, [1, 2]);
 });
 
 test('Kronecker products consume each live complex matrix atom', async () => {
