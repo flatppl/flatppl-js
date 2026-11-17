@@ -62,6 +62,13 @@ result = pushfwd(r -> r.a+r.v*[3,4], w)
   for (let i = 0; i < 4; i++) assert.ok(Math.abs(result.samples[i]-12*a[i]) < 2e-12);
 });
 
+test('the adjoint of a complex vector literal conjugates and orients it', async () => {
+  const { ctx } = makeMatCtx('result = adjoint([1,im]) * [2,3]', { sampleCount: 1 });
+  const result = await ctx.getMeasure('result');
+  assert.deepEqual(Array.from(result.samples), [2]);
+  assert.deepEqual(Array.from(result.imag), [-3]);
+});
+
 test('checked complex scalar branches retain every real and imaginary component', async () => {
   for (const compare of ['>', '<']) {
     const { ctx } = makeMatCtx(`
