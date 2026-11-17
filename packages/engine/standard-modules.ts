@@ -663,6 +663,7 @@ function _registerExtLinearAlgebra() {
   // impl (square-matrix checks, etc.).
   const dynMat = T.array(2, ['%dynamic', '%dynamic'], T.REAL);
   const complexMat = T.array(2, ['%dynamic', '%dynamic'], T.COMPLEX);
+  const complexVec = T.array(1, ['%dynamic'], T.COMPLEX);
 
   bindings.set('lu', {
     kind: 'function',
@@ -693,19 +694,19 @@ function _registerExtLinearAlgebra() {
     impl: extLinalg._matexp,
   });
 
-  // lstsq(A, b) — minimum-norm least-squares via QR. b is a length-m
+  // lstsq(A, b) — minimum-norm least-squares via SVD. b is a length-m
   // vector; result x is a length-k vector minimising ||A·x - b||₂.
   const dynVec = T.array(1, ['%dynamic'], T.REAL);
   bindings.set('lstsq', {
     kind: 'function',
     sig: T.funcType(
-      [{ name: 'A', type: dynMat }, { name: 'b', type: dynVec }],
-      dynVec,
+      [{ name: 'A', type: complexMat }, { name: 'b', type: complexVec }],
+      complexVec,
     ),
+    realResult: dynVec,
     impl: extLinalg._lstsq,
   });
 
-  const complexVec = T.array(1, ['%dynamic'], T.COMPLEX);
   // Real matrices can have complex spectra, so the eigen result uses a
   // conservative complex codomain. Columns are normalized right eigenvectors.
   bindings.set('eigen', {
@@ -729,16 +730,14 @@ function _registerExtLinearAlgebra() {
     impl: extLinalg._eigmin,
   });
 
-  // svd(A) — thin SVD via one-sided Jacobi rotations. For m × n A
-  // with m ≥ n, returns record(U, S, V) with U (m×n orthonormal),
-  // S (length-n descending singular values), V (n×n orthonormal),
-  // satisfying A = U · diag(S) · V^T.
+  // Economy SVD, r=min(m,n): U(m×r), S(r), V(n×r), A=U diag(S) Vᴴ.
   bindings.set('svd', {
     kind: 'function',
     sig: T.funcType(
-      [{ name: 'A', type: dynMat }],
-      T.record({ U: dynMat, S: dynVec, V: dynMat }),
+      [{ name: 'A', type: complexMat }],
+      T.record({ U: complexMat, S: dynVec, V: complexMat }),
     ),
+    realResult: T.record({ U: dynMat, S: dynVec, V: dynMat }),
     impl: extLinalg._svd,
   });
 
@@ -747,7 +746,7 @@ function _registerExtLinearAlgebra() {
   // tolerance (matches NumPy / Octave defaults).
   bindings.set('rank', {
     kind: 'function',
-    sig: T.funcType([{ name: 'A', type: dynMat }], T.INTEGER),
+    sig: T.funcType([{ name: 'A', type: complexMat }], T.INTEGER),
     impl: extLinalg._rank,
   });
 

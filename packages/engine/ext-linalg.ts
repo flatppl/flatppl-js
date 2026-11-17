@@ -356,32 +356,41 @@ function _qr(A: any): any {
 // shape (m,), as numpy.linalg.lstsq returns it: x = V · S⁺ · Uᵀ · b from the
 // thin SVD, where S⁺ inverts only the singular values above
 //   tol = max(m, k) · σ_max · ε_machine
-// (numpy's default rcond, and the tolerance `rank` uses). A rank-deficient
-// A, exactly or numerically, then gives the minimum-norm solution rather
-// than dividing by a rounding-level pivot. A wide A (m < k) takes the SVD of
-// Aᵀ = U·S·Vᵀ, so A = V·S·Uᵀ and x = U · S⁺ · Vᵀ · b.
+// (numpy's default rcond, and the tolerance `rank` uses). Rank-deficient A
+// gives the minimum-norm solution rather than dividing by a rounding-level
+// pivot. The SVD boundary handles wide A by decomposing its adjoint and
+// swapping U/V. Complex projection uses Uᴴ rather than a plain transpose.
 
 function _lstsq(A: any, b: any): any {
   A = valueLib._logicalDense(A);
-  b = valueLib._logicalDense(b);
+  b = valueLib._logicalDense(valueLib.asValue(b));
   const m = A.shape[0], k = A.shape[1];
   if (b.shape.length !== 1 || b.shape[0] !== m) {
     throw new Error('lstsq: b must be a length-m vector (got shape '
       + JSON.stringify(b.shape) + '; A is ' + m + 'x' + k + ')');
   }
-  const tall = m >= k;
-  let work = A;
-  if (!tall) {
-    const data = new Float64Array(k * m);
-    for (let i = 0; i < m; i++) for (let j = 0; j < k; j++) data[j * m + i] = A.data[i * k + j];
-    work = { shape: [k, m], data };
-  }
-  const { U, S, V } = _svd(work);
-  // In the tall case A = U·S·Vᵀ (U m×r, V k×r); in the wide case A = V·S·Uᵀ.
-  const left = tall ? U : V, right = tall ? V : U;
+  const { U: left, S, V: right } = _svd(A);
   const r = S.data.length, nl = left.shape[1], nr = right.shape[1];
   const tol = Math.max(m, k) * (r > 0 ? S.data[0] : 0) * 2.220446049250313e-16;
   const x = new Float64Array(k);
+  if (A.im || b.im) {
+    const im = new Float64Array(k);
+    for (let j = 0; j < r; j++) {
+      const s = S.data[j]; if (!(s > tol)) continue;
+      let cr = 0, ci = 0;
+      for (let i = 0; i < m; i++) {
+        const ur = left.data[i * nl + j], ui = left.im?.[i * nl + j] || 0;
+        const br = b.data[i], bi = b.im?.[i] || 0;
+        cr += ur * br + ui * bi; ci += ur * bi - ui * br;
+      }
+      cr /= s; ci /= s;
+      for (let i = 0; i < k; i++) {
+        const vr = right.data[i * nr + j], vi = right.im?.[i * nr + j] || 0;
+        x[i] += vr * cr - vi * ci; im[i] += vr * ci + vi * cr;
+      }
+    }
+    return valueLib.complexValue(x, im, [k]);
+  }
   for (let j = 0; j < r; j++) {
     const s = S.data[j];
     if (!(s > tol)) continue;
@@ -640,7 +649,12 @@ function _columnNorm(B: Float64Array, m: number, n: number, j: number): number {
 function _svd(A: any): any {
   A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
-  if (m < n) throw new Error('svd: requires m >= n (got ' + m + 'x' + n + '); transpose first');
+  if (m < n) {
+    // Aᴴ=U S Vᴴ implies A=V S Uᴴ, including complex and rank-deficient A.
+    const f = _svd(valueLib.adjoint(A));
+    return { U: f.V, S: f.S, V: f.U };
+  }
+  if (A.im) return require('./complex-svd.ts').svd(A);
   // Work on a fresh copy.
   const B = new Float64Array(m * n);
   for (let i = 0; i < m * n; i++) B[i] = A.data[i];
@@ -770,20 +784,10 @@ function _svd(A: any): any {
 // an integer.
 
 function _rank(A: any): number {
-  // SVD requires m >= n; transpose if needed (singular values are
-  // identical for A and A^T).
-  let work = A;
   const m0 = A.shape[0], n0 = A.shape[1];
-  if (m0 < n0) {
-    const data = new Float64Array(n0 * m0);
-    for (let i = 0; i < m0; i++) {
-      for (let j = 0; j < n0; j++) data[j * m0 + i] = A.data[i * n0 + j];
-    }
-    work = { shape: [n0, m0], data };
-  }
-  const fields = _svd(work);
+  const fields = _svd(A);
   const S = fields.S.data;
-  const sigmaMax = S[0];
+  const sigmaMax = S.length ? S[0] : 0;
   const tol = Math.max(m0, n0) * sigmaMax * 2.220446049250313e-16;
   let r = 0;
   for (let i = 0; i < S.length; i++) if (S[i] > tol) r++;

@@ -439,11 +439,6 @@ test('svd: 4x2 thin — round-trip + singular values descending', () => {
   assertClose(UtU, [1, 0, 0, 1], 1e-10);
 });
 
-test('svd: rejects m < n', () => {
-  const A = matVal(2, 3, [1, 2, 3, 4, 5, 6]);
-  assert.throws(() => extLinalg._svd(A), /m >= n/);
-});
-
 // =====================================================================
 // 8. rank — numerical rank via SVD
 // =====================================================================

@@ -65,6 +65,10 @@ It retains the real symmetric Jacobi fast path. Eigenpairs have a conservative
 complex codomain; real-spectrum extrema remain real, and matrix decomposition
 descriptors specialize real-preserving results when all inputs are real.
 
+Economy SVD supports tall/wide real and complex matrices, including null-space
+completion. The complex Jacobi path in `complex-svd.ts` scales columns separately
+and certifies unitary factors; `lstsq` and `rank` share the same singular values.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.
