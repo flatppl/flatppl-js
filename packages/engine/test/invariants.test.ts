@@ -290,11 +290,10 @@ test('invariant: every UN_OP_MAP target has a type signature', () => {
 // clean subset relations by design.)
 // ---------------------------------------------------------------------
 
-test('invariant: SAMPLEABLE_DISTRIBUTIONS ⊆ builtins.DISTRIBUTIONS', () => {
+test('invariant: sampleable kernels have base or standard-module constructor names', () => {
   for (const name of orchestrator.SAMPLEABLE_DISTRIBUTIONS) {
-    assert.ok(builtins.DISTRIBUTIONS.has(name),
-      `SAMPLEABLE_DISTRIBUTIONS lists '${name}' but builtins.DISTRIBUTIONS ` +
-      `doesn't — parser/analyzer won't recognise the constructor name`);
+    assert.ok(builtins.DISTRIBUTIONS.has(name) || builtins.PARTICLE_PHYSICS_DISTRIBUTIONS.has(name),
+      `sampleable kernel '${name}' has no base or particle-physics constructor name`);
   }
 });
 

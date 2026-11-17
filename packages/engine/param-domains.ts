@@ -177,9 +177,12 @@ const SET_NAMES: Record<DomainSet, string> = {
 /** Throw when parameter `name` of `kernel` lies outside its declared set. */
 function checkParam(kernel: string, name: string, value: any): void {
   const set = PARAM_SETS[kernel]?.[name];
-  if (!set || !violates(set, value)) return;
+  const tailExponent = (kernel === 'CrystalBall' && name === 'n')
+    || (kernel === 'DoubleSidedCrystalBall' && (name === 'nL' || name === 'nR'));
+  const badTail = tailExponent && flatten(value, []).some(x => x <= 1 || x === Infinity);
+  if (!set || (!badTail && !violates(set, value))) return;
   const err: any = new Error(`${kernel}: parameter '${name}' = ${describe(value)} is outside its `
-    + `declared value set ${SET_NAMES[set]} (spec ${SECTION_09.has(kernel) ? '§09' : '§08'})`);
+    + `declared value set ${badTail ? 'finite exponents greater than one' : SET_NAMES[set]} (spec ${SECTION_09.has(kernel) ? '§09' : '§08'})`);
   err.flatpplParameterDomain = true;
   throw err;
 }
