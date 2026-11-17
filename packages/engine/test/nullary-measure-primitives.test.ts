@@ -105,6 +105,22 @@ test('a broadcast holds the measure constant', () => {
   close(u[1], 0.6321205588285577, 'transport cell');
 });
 
+test('explicit base module factories retain nullary primitives under local shadowing', async () => {
+  const { ctx } = require('./_materialise-helpers.ts').makeMatCtx(`
+standard_module = fn(Dirac(_))
+version = "0.1"
+reg = base.standard_module("regression", version)
+M = reg.NormalGLM(rowstack([[1.0]]), 0.0, [1.0], 2.0)
+local_measure = standard_module(3.0)
+local_score = logdensityof(local_measure, 3.0)
+lp = builtin_logdensityof(M, [3.0])
+public_lp = logdensityof(M, [3.0])
+`, { sampleCount: 1 });
+  const expected = -Math.log(2 * Math.PI) / 2 - Math.log(2) - 0.5;
+  for (const name of ['lp', 'public_lp']) close((await ctx.getMeasure(name)).samples[0], expected, name);
+  assert.equal((await ctx.getMeasure('local_score')).samples[0], 0);
+});
+
 test('a nullary sample draws what the kernel form draws', () => {
   const values = evaluate(`
 state = rnginit([0, 1, 2, 3])
