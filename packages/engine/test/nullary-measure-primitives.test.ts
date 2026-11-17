@@ -62,6 +62,14 @@ test('a closed built-in measure scores like its kernel form', () => {
   for (const [src, expected] of cases) close(evaluate(src).get('lp'), expected, src);
 });
 
+test('nullary regression primitives resolve the registered standard module', () => {
+  const source = `reg = standard_module("regression", "0.1")
+M = reg.NormalGLM(rowstack([[1.0], [2.0]]), 0.0, [1.0], 2.0)
+lp = builtin_logdensityof(M, [1.0, 3.0])`;
+  // Two independent N(x, 2) responses, with residuals zero and one.
+  close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) - 2 * Math.log(2) - 1 / 8, source);
+});
+
 test('a broadcast holds the measure constant', () => {
   const lp = numbers(evaluate('lp = builtin_logdensityof.(Normal(1.0, 2.0), [0.5, 1.0])').get('lp'));
   close(lp[0], -1.643335713764618, 'cell 0');
