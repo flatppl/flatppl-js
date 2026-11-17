@@ -69,6 +69,9 @@ Economy SVD supports tall/wide real and complex matrices, including null-space
 completion. The complex Jacobi path in `complex-svd.ts` scales columns separately
 and certifies unitary factors; `lstsq` and `rank` share the same singular values.
 
+Complex matrix exponentials use the real block representation of a complex
+linear map, sharing the existing real Padé13 scaling-and-squaring solver.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.

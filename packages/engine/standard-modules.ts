@@ -688,9 +688,10 @@ function _registerExtLinearAlgebra() {
   bindings.set('matexp', {
     kind: 'function',
     sig: T.funcType(
-      [{ name: 'A', type: dynMat }],
-      dynMat,
+      [{ name: 'A', type: complexMat }],
+      complexMat,
     ),
+    realResult: dynMat,
     impl: extLinalg._matexp,
   });
 

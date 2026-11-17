@@ -182,6 +182,24 @@ function _matexp(A: any): any {
   A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('matexp: A must be a square matrix');
+  if (A.im) {
+    // Realification preserves multiplication and hence the exponential:
+    // R(A)=[Re A,-Im A; Im A,Re A], exp(R(A))=R(exp(A)). Reuse the
+    // real Padé solve and scaling decisions at this numerical boundary.
+    const size = 2 * n, block = new Float64Array(size * size);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const k = i * n + j, top = i * size + j, bottom = (i + n) * size + j;
+      block[top] = block[bottom + n] = A.data[k];
+      block[top + n] = -A.im[k]; block[bottom] = A.im[k];
+    }
+    const exponential = _matexp(_matValue(block, size, size));
+    const re = new Float64Array(n * n), im = new Float64Array(n * n);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      re[i * n + j] = exponential.data[i * size + j];
+      im[i * n + j] = exponential.data[(i + n) * size + j];
+    }
+    return valueLib.complexValue(re, im, [n, n]);
+  }
   // Scaling: pick s = max(0, ceil(log2(||A||_1 / θ_13))).
   const THETA_13 = 5.371920351148152;
   let maximum = 0;
