@@ -1004,8 +1004,11 @@ ops.register({
 
 function _adjointLogical(M: any): any {
   if (valueLib.isValue(M)) return valueLib.adjoint(M);    // O(1) tag flip
-  // Real-only nested-array path falls back to transpose (no complex
-  // numbers in nested arrays at this layer).
+  // A complex vector literal can arrive as an array of scalar cells.
+  // Pack it before applying the same lazy orientation and conjugation.
+  if (Array.isArray(M) && M.some(require('./sampler-complex.ts')._isComplex)) {
+    return valueLib.adjoint(valueLib.asValue(M));
+  }
   return _transposeLogical(M);
 }
 

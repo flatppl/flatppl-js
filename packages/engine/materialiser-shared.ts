@@ -1527,6 +1527,10 @@ function collectionAxesOf(v: any, N: number, usesAtom: boolean): number[] | null
   if (typeof v === 'number' || typeof v === 'boolean') return [];
   // §03 tables have one collection axis. Row extraction keeps each field whole.
   if (v?.__table__ === true) return [v.nrows];
+  // Structured table samples travel as one table object per atom.
+  if (usesAtom && Array.isArray(v) && v.length === N && v[0]?.__table__ === true) {
+    return [v[0].nrows];
+  }
   let shape: number[];
   if (valueLib.isValue(v)) shape = v.shape;
   else if (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number') shape = [v.length];
