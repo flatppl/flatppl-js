@@ -9,6 +9,24 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { quantile, numericalQuantile, probit } = require('../inverse-cdf.ts');
 
+test('large-shape Gamma-family transports execute against independent quantiles', async () => {
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  // scipy.stats.gamma(a=10000).ppf([.1,.5,.9]), and its exact Gamma-family
+  // change-of-variable identities. These expose the old large-shape seed bias.
+  const refs = [9872.060875049736, 9999.666668642047, 10128.367373674177];
+  for (let i = 0; i < 3; i++) {
+    const p = [.1, .5, .9][i];
+    const { ctx } = makeMatCtx(`
+g = builtin_fromuniform(Gamma, record(shape=10000.0,rate=1.0), ${p})
+c = builtin_fromuniform(ChiSquared, record(k=20000.0), ${p})
+v = builtin_fromuniform(InverseGamma, record(shape=10000.0,scale=2.0), ${1-p})`, { sampleCount: 1 });
+    for (const [name, expected] of [['g', refs[i]], ['c', 2 * refs[i]], ['v', 2 / refs[i]]] as Array<[string, number]>) {
+      const actual = (await ctx.getMeasure(name)).samples[0];
+      assert.ok(Math.abs(actual / expected - 1) < 3e-14, `${name}(${p}): ${actual} vs ${expected}`);
+    }
+  }
+});
+
 // distOp, params, [p...], scipy ppf reference [x...] — 6-dp from scipy.stats.
 const CASES: [string, any, number[], number[]][] = [
   ['Normal',      { mu: 0, sigma: 1 },     [0.001, 0.05, 0.25, 0.5, 0.75, 0.95, 0.999], [-3.090232, -1.644854, -0.674490, 0, 0.674490, 1.644854, 3.090232]],

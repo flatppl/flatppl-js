@@ -143,3 +143,21 @@ test('unbounded Gamma quantiles preserve exponential memorylessness', () => {
     assert.ok(Math.abs(actual - (lo + Math.log(2)/2)) < 1e-12);
   }
 });
+
+test('large-shape truncated Gamma quantiles retain central and tiny upper-tail probabilities', async () => {
+  // Independent SciPy inverse / scalar root of the conditional CDF.
+  const central = truncatedQuantile('Gamma', .5, { shape: 10000, rate: 1 }, 9990, 10030);
+  assert.ok(Math.abs(central - 10009.782546727749) < 2e-10);
+  const upper = truncatedQuantile('Gamma', .5, { shape: 10000, rate: 1 },
+    11078.196786213406, Infinity);
+  // Tail probability above the lower bound is 1e-25; the conditional median
+  // has survival 5e-26, without ever subtracting that probability from one.
+  assert.ok(Math.abs(upper - 11085.232309584782) < 2e-10);
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  const n = 16384;
+  const { ctx } = makeMatCtx(`x ~ iid(normalize(truncate(Gamma(10000.0,1.0),interval(9990.0,10030.0))),${n})`,
+    { sampleCount: 1, rootSeed: 117 });
+  const draws = (await ctx.getMeasure('x')).samples;
+  const fraction = draws.reduce((count: number, x: number) => count + +(x <= 10009.782546727749), 0) / n;
+  assert.ok(Math.abs(fraction - .5) <= 6 * Math.sqrt(.25 / n));
+});

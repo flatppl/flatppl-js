@@ -4,9 +4,8 @@
 // transform for TRUNCATED priors: a truncate(D, [lo,hi]) latent maps a cube
 // coord u through F_D^{-1}(F_D(lo) + u·(F_D(hi)-F_D(lo))), which needs F_D.
 const stdlibErfc     = require('@stdlib/math-base-special-erfc');
-const { regularizedGamma } = require('./incomplete-gamma.ts');
+const { regularizedGamma, inverseRegularizedGamma } = require('./incomplete-gamma.ts');
 const { regularizedBeta } = require('./incomplete-beta.ts');
-const stdlibGammaincinv = require('@stdlib/math-base-special-gammaincinv');
 const stdlibBetaincinv = require('@stdlib/math-base-special-betaincinv');
 const { QUANTILE, probit, numericalQuantile } = require('./inverse-cdf.ts');
 
@@ -72,7 +71,7 @@ const UPPER_QUANTILE: Record<string, (p: number, q: any) => number> = {
   Exponential: (p, q) => -Math.log(p) / q.rate,
   Uniform: (p, q) => q.hi - p * (q.hi - q.lo),
   Beta: (p, q) => stdlibBetaincinv(p, q.alpha, q.beta, true),
-  Gamma: (p, q) => stdlibGammaincinv(p, q.shape, true) / q.rate,
+  Gamma: (p, q) => inverseRegularizedGamma(q.shape, p, true) / q.rate,
   Cauchy: (p, q) => q.location + q.scale / Math.tan(Math.PI * p),
   HalfCauchy: (p, q) => q.scale / Math.tan(Math.PI * p / 2),
   HalfNormal: (p, q) => -q.sigma * probit(p / 2),
@@ -82,8 +81,8 @@ const UPPER_QUANTILE: Record<string, (p: number, q: any) => number> = {
   Pareto: (p, q) => q.scale / Math.pow(p, 1 / q.shape),
   Laplace: (p, q) => p < 0.5 ? q.location - q.scale * Math.log(2 * p)
     : q.location + q.scale * Math.log(2 * (1 - p)),
-  InverseGamma: (p, q) => q.scale / stdlibGammaincinv(p, q.shape),
-  ChiSquared: (p, q) => 2 * stdlibGammaincinv(p, q.k / 2, true),
+  InverseGamma: (p, q) => q.scale / inverseRegularizedGamma(q.shape, p),
+  ChiSquared: (p, q) => 2 * inverseRegularizedGamma(q.k / 2, p, true),
   StudentT: (p, q) => -QUANTILE.StudentT(p, q),
 };
 function hasCdf(distOp: string): boolean { return Object.prototype.hasOwnProperty.call(CDF, distOp); }

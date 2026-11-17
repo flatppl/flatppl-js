@@ -442,6 +442,42 @@
       ],
       "expected": 0.9772278398134261,
       "oracle": "70-digit mpmath integration of the normalized beta density"
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        8,
+        1e-20
+      ],
+      "expected": 2.480158730158784e-165,
+      "oracle": "SciPy 1.18.1"
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        10,
+        1e-12
+      ],
+      "expected": 2.7557319223961205e-127,
+      "oracle": "SciPy 1.18.1"
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        31543760.072911788,
+        31512709.928302083
+      ],
+      "expected": 1.5988702597231962e-8,
+      "oracle": "mpmath 70-digit integration of the normalized density"
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        5431705.28020825,
+        5416986.293956515
+      ],
+      "expected": 1.29853419514015e-10,
+      "oracle": "mpmath 70-digit integration of the normalized density"
     }
   ]
 }

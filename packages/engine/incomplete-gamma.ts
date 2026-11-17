@@ -20,7 +20,13 @@ function log1pmx(x: number): number {
 
 function prefactor(a: number, x: number): number {
   if (a < 8) return a * Math.log(x) - x - logGamma(a);
-  return a * log1pmx((x - a) / a) + (Math.log(a) - Math.log(2 * Math.PI)) / 2 - stirlingRemainder(a);
+  const delta = (x - a) / a;
+  // Far below the mean delta can round to -1 while x is still positive.
+  // Direct log ratios retain that lower tail; log1pmx handles cancellation
+  // near the mean where the two O(a) terms nearly cancel.
+  const exponent = Math.abs(delta) < 0.5 ? a * log1pmx(delta)
+    : a * (Math.log(x) - Math.log(a)) + a - x;
+  return exponent + (Math.log(a) - Math.log(2 * Math.PI)) / 2 - stirlingRemainder(a);
 }
 
 function stirlingRemainder(a: number): number {
@@ -110,4 +116,34 @@ function regularizedGamma(a: number, x: number, upper = false): number {
   throw new Error('Regularized gamma did not converge');
 }
 
-module.exports = { regularizedGamma, log1pmx, stirlingRemainder };
+/** Invert P/Q with a library seed and safeguarded Newton refinement. The
+ * smaller probability tail is evaluated directly, including upper tails far
+ * below epsilon. Refinement uses the same stable prefactor as the CDF. */
+function inverseRegularizedGamma(a: number, p: number, upper = false): number {
+  if (!(a > 0) || !(p >= 0 && p <= 1)) return NaN;
+  if (p === 0) return upper ? Infinity : 0;
+  if (p === 1) return upper ? 0 : Infinity;
+  if (p > 0.5) { p = 1 - p; upper = !upper; }
+  let x = require('@stdlib/math-base-special-gammaincinv')(p, a, upper);
+  if (x === 0) return 0; // the inverse is below the representable range
+  if (!(x > 0) || !Number.isFinite(x)) x = Math.max(a, 1);
+  let lo = 0, hi = Math.max(x, a, 1);
+  const below = (v: number) => upper ? v > p : v < p;
+  while (below(regularizedGamma(a, hi, upper))) hi *= 2;
+  for (let i = 0; i < 256; i++) {
+    const residual = regularizedGamma(a, x, upper) - p;
+    if (Math.abs(residual) <= 8 * Number.EPSILON * p) return x;
+    if (upper ? residual > 0 : residual < 0) lo = x; else hi = x;
+    const density = Math.exp(prefactor(a, x) - Math.log(x));
+    const next = x - residual / (upper ? -density : density);
+    // In a far tail one ulp of a large x can change the probability by much
+    // more than one ulp of p. Stop at x precision before rejecting the step.
+    if (Math.abs(next - x) <= 4 * Number.EPSILON * x) return next;
+    const candidate = next > lo && next < hi ? next : lo / 2 + hi / 2;
+    if (candidate === x || candidate === lo || candidate === hi) return candidate;
+    x = candidate;
+  }
+  throw new Error('Inverse regularized gamma did not converge');
+}
+
+module.exports = { regularizedGamma, inverseRegularizedGamma, log1pmx, stirlingRemainder };
