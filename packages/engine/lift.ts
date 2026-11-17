@@ -4857,6 +4857,26 @@ function isEvaluable(ir: IRNode | null | undefined, bindings?: any): boolean {
         if (args.length !== 2) return false;
         return isEvaluable(args[0], bindings);
       }
+      // Standard-module string controls are complete scalar arguments, not
+      // sampled numeric leaves. Keep the allowance on their declared input so
+      // a live numerical call with a literal mode remains evaluable.
+      if (standard?.kind === 'function' && standard.sig?.inputs?.some((input: any) =>
+        input.type?.kind === 'scalar' && input.type.prim === 'string')) {
+        const inputs = standard.sig?.inputs || [];
+        const operand = (arg: any, input: any) => isEvaluable(arg, bindings)
+          || _isEvaluableArrayArg(arg, bindings)
+          || (input?.type?.kind === 'scalar' && input.type.prim === 'string'
+            && arg?.kind === 'lit' && typeof arg.value === 'string');
+        const args = ir.args || [];
+        if (args.length === 1 && args[0]?.op === 'record'
+            && !require('./types.ts').acceptsPositional(standard.sig, 1)) {
+          return (args[0].fields || []).every((field: any) =>
+            operand(field.value, inputs.find((input: any) => input.name === field.name)));
+        }
+        return args.every((arg: any, i: number) => operand(arg, inputs[i]))
+          && Object.entries(ir.kwargs || {}).every(([name, arg]) =>
+            operand(arg, inputs.find((input: any) => input.name === name)));
+      }
       // All args / kwargs / fields must themselves be evaluable.
       // record IR uses `fields: [{name, value}, ...]` instead of args,
       // so we walk that shape too — a record(a=x, b=y) is evaluable
