@@ -213,10 +213,17 @@ const DISTRIBUTIONS = new Set([
 // whole REGISTRY plus `DISTRIBUTIONS`, so a newly registered density cannot
 // evaluate while still failing to lower.
 // §09 `particle-physics` (spec §09 "Distributions").
-const PARTICLE_PHYSICS_DISTRIBUTIONS: ReadonlySet<string> = new Set([
-  'CrystalBall', 'DoubleSidedCrystalBall', 'Argus', 'RelativisticBreitWigner',
-  'Voigtian', 'Landau', 'BifurcatedNormal', 'ContinuedPoisson',
-]);
+const PARTICLE_PHYSICS_PARAMS = {
+  CrystalBall: ['m0', 'sigma', 'alpha', 'n'],
+  DoubleSidedCrystalBall: ['m0', 'sigmaL', 'sigmaR', 'alphaL', 'alphaR', 'nL', 'nR'],
+  Argus: ['resonance', 'slope', 'power'],
+  RelativisticBreitWigner: ['mean', 'width'],
+  Voigtian: ['mean', 'width', 'sigma'],
+  Landau: ['loc', 'scale'],
+  BifurcatedNormal: ['mean', 'sigmaL', 'sigmaR'],
+  ContinuedPoisson: ['rate'],
+};
+const PARTICLE_PHYSICS_DISTRIBUTIONS: ReadonlySet<string> = new Set(Object.keys(PARTICLE_PHYSICS_PARAMS));
 const REGRESSION_DISTRIBUTIONS: ReadonlySet<string> = require('./regression.ts').NAMES;
 const FLATPDL_KERNEL_TAGS = new Set([...DISTRIBUTIONS, ...PARTICLE_PHYSICS_DISTRIBUTIONS, ...REGRESSION_DISTRIBUTIONS]);
 
@@ -311,7 +318,7 @@ function isReserved(name: string) {
 module.exports = {
   CONSTANTS, BOOL_LITERALS, SETS, SET_CONSTRUCTORS,
   RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_OPERATIONS,
-  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS, PARTICLE_PHYSICS_DISTRIBUTIONS, REGRESSION_DISTRIBUTIONS,
+  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS, PARTICLE_PHYSICS_DISTRIBUTIONS, PARTICLE_PHYSICS_PARAMS, REGRESSION_DISTRIBUTIONS,
   MEASURE_OPS, MEASURE_PRODUCING, ALL_KNOWN,
   isKnownName, isConstant, isBoolLiteral, isSet, isSpecialOperation, isReserved,
 };

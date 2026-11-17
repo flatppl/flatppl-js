@@ -590,6 +590,8 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
   'Geometric', 'NegativeBinomial', 'NegativeBinomial2',
   'Categorical', 'Categorical0',
+  'CrystalBall', 'DoubleSidedCrystalBall', 'Argus', 'RelativisticBreitWigner',
+  'Voigtian', 'Landau', 'BifurcatedNormal',
   // Dirac is degenerate (zero entropy): the sampler emits the
   // 'value' kwarg verbatim N times. Listed here so measure-alias
   // bindings like `m = Dirac(value = 5)` get classified 'skip' and
@@ -876,7 +878,7 @@ function normalizeMeasureIR(ir: IRNode | null | undefined, bindings: any): IRNod
   if (!ir || ir.kind !== 'call') return ir;
   const member = ir.target && bindings
     && require('./standard-modules.ts').standardModuleBinding(ir, bindings, 'ir');
-  if (member?.kind === 'distribution' && require('./regression.ts').NAMES.has(member.op)) {
+  if (member?.kind === 'distribution' && member.op) {
     return { kind: 'call', op: member.op, args: ir.args, kwargs: ir.kwargs,
       moduleDistribution: true, loc: ir.loc };
   }

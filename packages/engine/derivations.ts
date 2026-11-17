@@ -1125,7 +1125,7 @@ function classifyDerivation(
 
   if (binding.type === 'draw') {
     if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'draw') return null;
-    const inner = (rhsIR.args && rhsIR.args[0]) || null;
+    const inner = normalizeMeasureIR((rhsIR.args && rhsIR.args[0]) || null, bindings);
     if (!inner) return null;
     // draw(<ref>): resolve the measure by name in a draw-owned context.
     if (inner.kind === 'ref' && inner.ns === 'self') {
@@ -2628,7 +2628,8 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   const k = rhsIR.args[0];
   const moduleKernel = k?.kind === 'ref' && require('./standard-modules.ts').standardModuleBinding(
     { kind: 'call', target: k }, bindings, 'ir');
-  if (moduleKernel?.kind === 'distribution' && require('./regression.ts').NAMES.has(moduleKernel.op)) {
+  if (moduleKernel?.kind === 'distribution'
+      && (require('./regression.ts').NAMES.has(moduleKernel.op) || SAMPLEABLE_DISTRIBUTIONS.has(moduleKernel.op))) {
     return { kind: 'kernelbroadcast', distOp: moduleKernel.op,
       argIRs: rhsIR.args.slice(1), kwargIRs: rhsIR.kwargs || null };
   }

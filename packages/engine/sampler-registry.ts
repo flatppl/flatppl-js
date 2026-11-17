@@ -25,6 +25,7 @@ const rng      = require('./rng.ts');
 const valueLib = require('./value.ts');
 const transforms = require('./transforms.ts');
 const paramDomains = require('./param-domains.ts');
+const { PARTICLE_PHYSICS_PARAMS } = require('./builtins.ts');
 const { logBesselI0 } = require('./bessel.ts');
 
 // Same primitive @stdlib's own random-base-beta/lib/validate.js uses to
@@ -34,7 +35,6 @@ const { logBesselI0 } = require('./bessel.ts');
 const isPositiveNumber = require('@stdlib/assert-is-positive-number').isPrimitive;
 
 // Math special functions for gamma / loggamma / erf-based math.
-const stdlibGamma       = require('@stdlib/math-base-special-gamma');
 const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
 const stdlibBetaln      = require('@stdlib/math-base-special-betaln');
 const stdlibLog1pmx     = require('@stdlib/math-base-special-log1pmx');
@@ -44,7 +44,6 @@ const stdlibLog1pmx     = require('@stdlib/math-base-special-log1pmx');
 // use the same primitive to stay bit-exact (the two ln impls differ in
 // the last ULP on ~1.6% of inputs).
 const stdlibLn          = require('@stdlib/math-base-special-ln');
-const stdlibErfc        = require('@stdlib/math-base-special-erfc');
 const stdlibErfcinv     = require('@stdlib/math-base-special-erfcinv');
 // Regularized lower incomplete gamma P(s, x): `gammainc(x, s)` (x = upper
 // limit of integration, s = shape). Used for the Argus normalization.
@@ -1404,21 +1403,31 @@ function _continuedPoissonNonGenerative(): never {
 }
 
 // =====================================================================
-// particle-physics distribution densities (spec §09). DENSITY-ONLY for now
-// (logpdf landed; samplers deferred) — all are absent from
-// SAMPLEABLE_DISTRIBUTIONS and carry `densityOnly: true`, so a draw throws.
+// Particle-physics probability laws (spec §09). The numeric samplers and
+// analytical CDF/quantile helpers live in hep-sampling.ts. ContinuedPoisson
+// remains non-generative because it is not a probability measure.
 // Each `logpdf` is the spec's normalized density; normalizations are
 // closed-form (verified against scipy / numerical quadrature to ≲1e-12).
 // =====================================================================
 
-const _SQRT_HALF_PI = Math.sqrt(Math.PI / 2);  // ∫ e^{-z²/2} half-Gaussian scale
 const _SQRT_2 = Math.SQRT2;
-const _erf = (x: number): number => 1 - stdlibErfc(x);
 
-function _hepDensityOnly(name: string) {
-  return function (): never {
-    throw new Error(`${name}: density-only in flatppl-js (spec §09) — the `
-      + `logpdf is implemented but the sampler is not yet; draw/rand is unavailable.`);
+const hep = require('./hep-sampling.ts');
+
+function _hepSampler(draw: (u: () => number, ...params: number[]) => number): any {
+  return { factory: (...args: any[]) => {
+    const last = args[args.length - 1];
+    const opts = last && typeof last === 'object' ? args.pop() : {};
+    const uniform = _sharedPrng(opts);
+    return args.length === 0 ? (...params: number[]) => draw(uniform, ...params)
+      : () => draw(uniform, ...args);
+  } };
+}
+
+function _hepCtor(logpdf: any, support: (p: number[]) => number[], center: (p: number[]) => number,
+    scale: (p: number[]) => number, exactCdf?: (...args: number[]) => number): any {
+  return function(...params: number[]) {
+    return hep.analytical(logpdf, params, support(params), center(params), scale(params), exactCdf);
   };
 }
 
@@ -1426,17 +1435,7 @@ function _hepDensityOnly(name: string) {
 // N = σ·(C + D): C the tail integral (needs n > 1), D the Gaussian-core
 // integral. Matches scipy.stats.crystalball to ~1e-12.
 function _crystalBallLogpdf(x: number, m0: number, sigma: number, alpha: number, n: number): number {
-  const aAbs = Math.abs(alpha);
-  const A = Math.pow(n / aAbs, n) * Math.exp(-aAbs * aAbs / 2);
-  const B = n / aAbs - aAbs;
-  const C = (n / aAbs) * (1 / (n - 1)) * Math.exp(-aAbs * aAbs / 2);
-  const D = _SQRT_HALF_PI * (1 + _erf(aAbs / _SQRT_2));
-  const logN = Math.log(sigma * (C + D));
-  const z = (x - m0) / sigma;
-  const core = z < -aAbs
-    ? Math.log(A) - n * Math.log(B - z)
-    : -0.5 * z * z;
-  return core - logN;
+  return hep.crystalLogpdf(x, m0, sigma, alpha, n);
 }
 
 // Double-sided Crystal Ball: independent power-law tails on both sides,
@@ -1446,35 +1445,22 @@ function _doubleSidedCrystalBallLogpdf(
   x: number, m0: number, sigmaL: number, sigmaR: number,
   alphaL: number, alphaR: number, nL: number, nR: number,
 ): number {
-  const aL = Math.abs(alphaL), aR = Math.abs(alphaR);
-  const AL = Math.pow(nL / aL, nL) * Math.exp(-aL * aL / 2), BL = nL / aL - aL;
-  const AR = Math.pow(nR / aR, nR) * Math.exp(-aR * aR / 2), BR = nR / aR - aR;
-  const tailL = sigmaL * (nL / aL) * (1 / (nL - 1)) * Math.exp(-aL * aL / 2);
-  const coreL = sigmaL * _SQRT_HALF_PI * _erf(aL / _SQRT_2);
-  const coreR = sigmaR * _SQRT_HALF_PI * _erf(aR / _SQRT_2);
-  const tailR = sigmaR * (nR / aR) * (1 / (nR - 1)) * Math.exp(-aR * aR / 2);
-  const logN = Math.log(tailL + coreL + coreR + tailR);
-  const zL = (x - m0) / sigmaL, zR = (x - m0) / sigmaR;
-  let core: number;
-  if (zL < -aL) core = Math.log(AL) - nL * Math.log(BL - zL);
-  else if (zL <= 0) core = -0.5 * zL * zL;
-  else if (zR <= aR) core = -0.5 * zR * zR;
-  else core = Math.log(AR) - nR * Math.log(BR + zR);
-  return core - logN;
+  return hep.doubleCrystalLogpdf(x, m0, sigmaL, sigmaR, alphaL, alphaR, nL, nR);
 }
 
-// ARGUS log-density on (0, m0). Normalization (slope c < 0): with a = −c,
-// M = (m0²/2)·a^{−(p+1)}·γ(p+1, a), γ the lower incomplete gamma =
-// P(p+1, a)·Γ(p+1). Outside (0, m0) the density is 0 → −∞.
+// ARGUS log-density on (0, m0), including zero and positive slopes. Under
+// u=1-(x/m0)^2, M=(m0²/2)∫₀¹u^p exp(cu)du.
 function _argusLogpdf(x: number, resonance: number, slope: number, power: number): number {
-  if (x <= 0 || x >= resonance) return -Infinity;
-  const m0 = resonance, c = slope, p = power;
-  const a = -c;
-  const gLower = stdlibGammainc(a, p + 1) * stdlibGamma(p + 1);  // γ(p+1, a)
-  const logM = Math.log(m0 * m0 / 2) - (p + 1) * Math.log(a) + Math.log(gLower);
-  const u = 1 - (x / m0) * (x / m0);
-  return Math.log(x) + p * Math.log(u) + c * u - logM;
+  return _argusLogpdf.factory(resonance, slope, power)(x);
 }
+_argusLogpdf.factory = (resonance: number, slope: number, power: number) => {
+  const logM = 2 * Math.log(resonance) - Math.LN2 + hep.argusLogIntegral(slope, power);
+  return (x: number) => {
+    if (x <= 0 || x >= resonance) return -Infinity;
+    const u = 1 - (x / resonance) ** 2;
+    return Math.log(x) + power * Math.log(u) + slope * u - logM;
+  };
+};
 
 // Relativistic Breit–Wigner log-density on x > 0. Normalization M is
 // closed-form (spec §09): M = π√(m²+γ)/(2√2·m·Γ·γ), γ = √(m²(m²+Γ²)).
@@ -1852,7 +1838,7 @@ const REGISTRY = {
     logpdfFn: logpmfPoisson,
   },
   ContinuedPoisson: {
-    params:   ['rate'],
+    params:   PARTICLE_PHYSICS_PARAMS.ContinuedPoisson,
     aliases:  {},
     discrete: false,
     // Density-only: no sampler, so exempt from the REGISTRY ⊆
@@ -1867,66 +1853,59 @@ const REGISTRY = {
     logpdfFn: _continuedPoissonLogpdf,
   },
   CrystalBall: {
-    params:   ['m0', 'sigma', 'alpha', 'n'],
+    params:   PARTICLE_PHYSICS_PARAMS.CrystalBall,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('CrystalBall'),
-    randFn:   { factory: _hepDensityOnly('CrystalBall') },
+    Ctor:     _hepCtor(_crystalBallLogpdf, () => [-Infinity, Infinity], p => p[0], p => p[1], hep.crystalCdf),
+    randFn:   _hepSampler(hep.crystalBall),
     logpdfFn: _crystalBallLogpdf,
   },
   DoubleSidedCrystalBall: {
-    params:   ['m0', 'sigmaL', 'sigmaR', 'alphaL', 'alphaR', 'nL', 'nR'],
+    params:   PARTICLE_PHYSICS_PARAMS.DoubleSidedCrystalBall,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('DoubleSidedCrystalBall'),
-    randFn:   { factory: _hepDensityOnly('DoubleSidedCrystalBall') },
+    Ctor:     _hepCtor(_doubleSidedCrystalBallLogpdf, () => [-Infinity, Infinity], p => p[0], p => Math.max(p[1], p[2]), hep.doubleCrystalCdf),
+    randFn:   _hepSampler(hep.doubleCrystalBall),
     logpdfFn: _doubleSidedCrystalBallLogpdf,
   },
   Argus: {
-    params:   ['resonance', 'slope', 'power'],
+    params:   PARTICLE_PHYSICS_PARAMS.Argus,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('Argus'),
-    randFn:   { factory: _hepDensityOnly('Argus') },
+    Ctor:     _hepCtor(_argusLogpdf, p => [0, p[0]], p => p[0] / 2, p => p[0]),
+    randFn:   _hepSampler(hep.argus),
     logpdfFn: _argusLogpdf,
   },
   RelativisticBreitWigner: {
-    params:   ['mean', 'width'],
+    params:   PARTICLE_PHYSICS_PARAMS.RelativisticBreitWigner,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('RelativisticBreitWigner'),
-    randFn:   { factory: _hepDensityOnly('RelativisticBreitWigner') },
+    Ctor:     _hepCtor(_relativisticBreitWignerLogpdf, () => [0, Infinity], p => p[0], p => p[1], hep.breitWignerCdf),
+    randFn:   _hepSampler(hep.breitWigner),
     logpdfFn: _relativisticBreitWignerLogpdf,
   },
   Voigtian: {
-    params:   ['mean', 'width', 'sigma'],
+    params:   PARTICLE_PHYSICS_PARAMS.Voigtian,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('Voigtian'),
-    randFn:   { factory: _hepDensityOnly('Voigtian') },
+    Ctor:     _hepCtor(_voigtianLogpdf, () => [-Infinity, Infinity], p => p[0], p => Math.max(p[1], p[2])),
+    randFn:   _hepSampler(hep.voigtian),
     logpdfFn: _voigtianLogpdf,
   },
   Landau: {
-    params:   ['loc', 'scale'],
+    params:   PARTICLE_PHYSICS_PARAMS.Landau,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('Landau'),
-    randFn:   { factory: _hepDensityOnly('Landau') },
+    Ctor:     _hepCtor(_landauLogpdf, () => [-Infinity, Infinity], p => p[0], p => p[1]),
+    randFn:   _hepSampler(hep.landau),
     logpdfFn: _landauLogpdf,
   },
   BifurcatedNormal: {
-    params:   ['mean', 'sigmaL', 'sigmaR'],
+    params:   PARTICLE_PHYSICS_PARAMS.BifurcatedNormal,
     aliases:  {},
     discrete: false,
-    densityOnly: true,
-    Ctor:     _hepDensityOnly('BifurcatedNormal'),
-    randFn:   { factory: _hepDensityOnly('BifurcatedNormal') },
+    Ctor:     _hepCtor(_bifurcatedNormalLogpdf, () => [-Infinity, Infinity], p => p[0], p => Math.max(p[1], p[2]), hep.bifurcatedCdf),
+    randFn:   _hepSampler(hep.bifurcated),
     logpdfFn: _bifurcatedNormalLogpdf,
   },
   Dirac: {
