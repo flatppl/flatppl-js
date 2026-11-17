@@ -228,12 +228,9 @@ function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
       return (i: number) => sub[i];
     }
     if (fm && fm.value && Array.isArray(fm.value.shape)) {
-      const v = fm.value, shape = v.shape, data = v.data;
-      if (N === 0) N = shape[0];
-      if (shape.length === 1) return (i: number) => data[i];
-      const tail = shape.slice(1);
-      const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
-      return (i: number) => ({ shape: tail, data: data.subarray(i * tailLen, (i + 1) * tailLen) });
+      const v = valueLib._logicalDense(fm.value);
+      if (N === 0) N = v.shape[0];
+      return (i: number) => valueLib._sliceRow(v, i);
     }
     throw new Error(label + ': record field "' + name + '.' + f
       + '" is neither scalar (.samples), record (.fields), nor vector (.value)');

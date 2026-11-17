@@ -49,6 +49,11 @@ and Airy kernels live in `bessel-real-order.ts`; J/I use a complex codomain for
 their principal branch on negative real arguments. Incomplete gamma/beta share
 the existing scalar CDF implementations in `forward-cdf.ts`.
 
+Batched numeric cell packing retains both planes of complex matrices, including
+real cells embedded into a complex batch. Record-valued numerical calls retain
+whole atoms through the existing record-measure path; record field access uses
+the common Value row slicer so it preserves imaginary planes and layout tags.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.
