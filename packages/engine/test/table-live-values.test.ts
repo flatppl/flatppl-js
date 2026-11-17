@@ -98,3 +98,14 @@ vectors = (r -> [r.x,r.x+im]).(rows)
     assert.equal(vectors.im[i*4+row*2+1], 1);
   }
 });
+
+test('empty table-row results retain the atom and row axes', async () => {
+  const { ctx } = makeMatCtx(`
+a ~ Normal(0,1)
+rows = table(x = [a,a+1])
+result = (r -> filter(z -> z.x < 0, (z -> record(x=z)).([abs(r.x)+1,abs(r.x)+2])).x).(rows)
+`, { sampleCount: 4, rootSeed: 132 });
+  const result = await ctx.getMeasure('result');
+  assert.deepEqual(result.value.shape, [4,2,0]);
+  assert.equal(result.samples.length, 0);
+});

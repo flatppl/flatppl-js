@@ -61,3 +61,21 @@ result = pushfwd(r -> r.a+r.v*[3,4], w)
   assert.ok(Math.abs(result.logTotalmass-Math.log(2)) < 2e-12);
   for (let i = 0; i < 4; i++) assert.ok(Math.abs(result.samples[i]-12*a[i]) < 2e-12);
 });
+
+test('checked complex scalar branches retain every real and imaginary component', async () => {
+  for (const compare of ['>', '<']) {
+    const { ctx } = makeMatCtx(`
+a ~ Normal(0,1)
+v = complex.([1,0],[0,1])
+result = checked(ifelse(a ${compare} 0,a+im,(a*adjoint(v))*v), lengthof(v)==2)
+`, { sampleCount: 4, rootSeed: 132 });
+    const a: Float64Array = (await ctx.getMeasure('a')).samples;
+    const result = (await ctx.getMeasure('result')).value;
+    assert.deepEqual(result.shape, [4]);
+    for (let i = 0; i < 4; i++) {
+      const chooseComplex = compare === '>' ? a[i] > 0 : a[i] < 0;
+      assert.equal(result.data[i], chooseComplex ? a[i] : 2*a[i]);
+      assert.equal(result.im[i], chooseComplex ? 1 : 0);
+    }
+  }
+});

@@ -126,3 +126,20 @@ result = pushfwd(x -> 2*x, weighted(2, lawof(a)))
   assert.equal(measure.logWeights.length, 4);
   assert.ok(Math.abs(measure.logTotalmass-Math.log(2)) < 2e-12);
 });
+
+test('a fixed-only record subset keeps the original sampled weights and atom count', async () => {
+  const { ctx } = makeMatCtx(`
+a ~ Normal(0,1)
+r = record(v = [1,2], k = 4, a = a)
+w = logweighted(r -> r.a, lawof(r))
+p = pushfwd(r -> get(r,["v","k"]), w)
+result = pushfwd(r -> sum(r.v)+r.k, p)
+`, { sampleCount: 4, rootSeed: 132 });
+  const a: Float64Array = (await ctx.getMeasure('a')).samples;
+  const result = await ctx.getMeasure('result');
+  assert.deepEqual(Array.from(result.samples), [7,7,7,7]);
+  assert.equal(result.logWeights.length, 4);
+  for (let i = 0; i < 4; i++) assert.ok(Math.abs(result.logWeights[i]-a[i]+Math.log(4)) < 2e-12);
+  const mass = Math.log(Array.from(a).reduce((sum, x) => sum+Math.exp(x), 0)/4);
+  assert.ok(Math.abs(result.logTotalmass-mass) < 2e-12);
+});
