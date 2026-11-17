@@ -371,53 +371,90 @@ function _qr(A: any): any {
 // =====================================================================
 //
 // The minimum-norm least-squares solution for A of shape (m, k) and b of
-// shape (m,), as numpy.linalg.lstsq returns it: x = V · S⁺ · Uᵀ · b from the
-// thin SVD, where S⁺ inverts only the singular values above
-//   tol = max(m, k) · σ_max · ε_machine
-// (numpy's default rcond, and the tolerance `rank` uses). Rank-deficient A
+// shape (m,) or (m,p): x = V · S⁺ · Uᴴ · b from the thin SVD.
+// S⁺ inverts singular values strictly above max(atol,rtol*σ_max), with
+// automatic rtol=max(m,k)*epsilon by default. Rank-deficient A
 // gives the minimum-norm solution rather than dividing by a rounding-level
 // pivot. The SVD boundary handles wide A by decomposing its adjoint and
 // swapping U/V. Complex projection uses Uᴴ rather than a plain transpose.
 
-function _lstsq(A: any, b: any): any {
+/** Validate the shared absolute/relative cutoff used by rank, pinv and lstsq. */
+function _cutoffs(A: any, rtol = -1, atol = 0): [number, number] {
+  if (rtol === -1) rtol = Math.max(...A.shape) * Number.EPSILON;
+  if (!Number.isFinite(rtol) || rtol < 0 || !Number.isFinite(atol) || atol < 0) {
+    throw new Error('rtol and atol must be finite and nonnegative (rtol=-1 selects automatic tolerance)');
+  }
+  return [rtol, atol];
+}
+
+/** Multiplication is deliberate: rtol=0 must retain tiny positive singular
+ * values even when their ratio to sigma_max would underflow. */
+function _singularCutoff(S: Float64Array, relative: number, absolute: number): number {
+  return Math.max(absolute, relative * (S[0] || 0));
+}
+
+function _lstsq(A: any, b: any, rtol = -1, atol = 0): any {
+  valueLib.requireMatrix(A, 'lstsq');
   A = valueLib._logicalDense(A);
   b = valueLib._logicalDense(valueLib.asValue(b));
   const m = A.shape[0], k = A.shape[1];
-  if (b.shape.length !== 1 || b.shape[0] !== m) {
-    throw new Error('lstsq: b must be a length-m vector (got shape '
-      + JSON.stringify(b.shape) + '; A is ' + m + 'x' + k + ')');
+  if ((b.shape.length !== 1 && b.shape.length !== 2) || b.shape[0] !== m || b.outerRank) {
+    throw new Error('lstsq: b must be a vector or matrix with ' + m + ' rows');
   }
-  const { U: left, S, V: right } = _svd(A);
-  const r = S.data.length, nl = left.shape[1], nr = right.shape[1];
-  const tol = Math.max(m, k) * (r > 0 ? S.data[0] : 0) * 2.220446049250313e-16;
-  const x = new Float64Array(k);
-  if (A.im || b.im) {
-    const im = new Float64Array(k);
-    for (let j = 0; j < r; j++) {
-      const s = S.data[j]; if (!(s > tol)) continue;
+  const [relative, absolute] = _cutoffs(A, rtol, atol), { U: left, S, V: right } = _svd(A);
+  const r = S.data.length, cols = b.shape.length === 1 ? 1 : b.shape[1];
+  const cutoff = _singularCutoff(S.data, relative, absolute);
+  const x = new Float64Array(k * cols), im = A.im || b.im ? new Float64Array(x.length) : null;
+  for (let j = 0; j < r; j++) {
+    const s = S.data[j];
+    if (!(s > cutoff)) continue;
+    for (let c = 0; c < cols; c++) {
       let cr = 0, ci = 0;
       for (let i = 0; i < m; i++) {
-        const ur = left.data[i * nl + j], ui = left.im?.[i * nl + j] || 0;
-        const br = b.data[i], bi = b.im?.[i] || 0;
+        const ur = left.data[i * r + j], ui = left.im?.[i * r + j] ?? 0;
+        const br = b.data[i * cols + c], bi = b.im?.[i * cols + c] ?? 0;
         cr += ur * br + ui * bi; ci += ur * bi - ui * br;
       }
       cr /= s; ci /= s;
       for (let i = 0; i < k; i++) {
-        const vr = right.data[i * nr + j], vi = right.im?.[i * nr + j] || 0;
-        x[i] += vr * cr - vi * ci; im[i] += vr * ci + vi * cr;
+        const vr = right.data[i * r + j], vi = right.im?.[i * r + j] ?? 0;
+        x[i * cols + c] += vr * cr - vi * ci;
+        if (im) im[i * cols + c] += vr * ci + vi * cr;
       }
     }
-    return valueLib.complexValue(x, im, [k]);
   }
+  const shape = b.shape.length === 1 ? [k] : [k, cols];
+  return im ? valueLib.complexValue(x, im, shape) : { shape, data: x };
+}
+
+/** Moore-Penrose inverse from the existing economy SVD: V S⁺ Uᴴ. */
+function _pinv(A: any, rtol = -1, atol = 0): any {
+  valueLib.requireMatrix(A, 'pinv');
+  A = valueLib._logicalDense(A);
+  const [m, n] = A.shape, [relative, absolute] = _cutoffs(A, rtol, atol), { U, S, V } = _svd(A);
+  const r = S.data.length, re = new Float64Array(n * m), im = A.im ? new Float64Array(n * m) : null;
+  const cutoff = _singularCutoff(S.data, relative, absolute);
   for (let j = 0; j < r; j++) {
     const s = S.data[j];
-    if (!(s > tol)) continue;
-    let c = 0;
-    for (let i = 0; i < m; i++) c += left.data[i * nl + j] * b.data[i];
-    c /= s;
-    for (let i = 0; i < k; i++) x[i] += c * right.data[i * nr + j];
+    if (!(s > cutoff)) continue;
+    for (let i = 0; i < n; i++) {
+      const vr = V.data[i * r + j] / s, vi = (V.im?.[i * r + j] ?? 0) / s;
+      for (let k = 0; k < m; k++) {
+        const ur = U.data[k * r + j], ui = U.im?.[k * r + j] ?? 0;
+        re[i * m + k] += vr * ur + vi * ui;
+        if (im) im[i * m + k] += vi * ur - vr * ui;
+      }
+    }
   }
-  return _vecValue(x, k);
+  return im ? valueLib.complexValue(re, im, [n, m]) : _matValue(re, n, m);
+}
+
+/** Spectral condition number uses the full singular spectrum, without truncation. */
+function _cond(A: any): number {
+  valueLib.requireMatrix(A, 'cond');
+  const S = _svd(A).S.data;
+  if (!S.length) throw new Error('cond: singular spectrum must be nonempty');
+  return S[S.length - 1] > 0 ? S[0] / S[S.length - 1] : Infinity;
 }
 
 // =====================================================================
@@ -456,7 +493,7 @@ function _isSymmetric(A: any, n: number, tol: number): boolean {
   return true;
 }
 
-function _jacobiSymmetric(A: any, computeVectors = true): {
+function _jacobiSymmetric(A: any, computeVectors = true, relativeTolerance = _JACOBI_TOL_REL): {
   values: Float64Array; vectors: Float64Array | null; n: number;
 } {
   A = valueLib._logicalDense(A);
@@ -476,7 +513,7 @@ function _jacobiSymmetric(A: any, computeVectors = true): {
     const v = A.data[i] / scale;
     frob2 += v * v;
   }
-  const tol = _JACOBI_TOL_REL * Math.sqrt(frob2);
+  const tol = relativeTolerance * Math.sqrt(frob2);
   if (!_isSymmetric(A, n, Math.max(tol * scale, 1e-10))) {
     throw new Error('eigen: only symmetric matrices supported in this version '
       + '(non-symmetric requires complex-output path; deferred)');
@@ -801,16 +838,71 @@ function _svd(A: any): any {
 // (the conventional choice, matching NumPy / Octave defaults). Returns
 // an integer.
 
-function _rank(A: any): number {
-  const m0 = A.shape[0], n0 = A.shape[1];
-  const fields = _svd(A);
-  const S = fields.S.data;
-  const sigmaMax = S.length ? S[0] : 0;
-  const tol = Math.max(m0, n0) * sigmaMax * 2.220446049250313e-16;
-  let r = 0;
-  for (let i = 0; i < S.length; i++) if (S[i] > tol) r++;
-  return r;
+function _rank(A: any, rtol = -1, atol = 0): number {
+  valueLib.requireMatrix(A, 'rank');
+  const [relative, absolute] = _cutoffs(A, rtol, atol), S = _svd(A).S.data;
+  const cutoff = _singularCutoff(S, relative, absolute);
+  let rank = 0;
+  for (const s of S) if (s > cutoff) rank++;
+  return rank;
 }
+
+/** Symmetric/Hermitian eigenpairs with a real ascending spectrum. Validate
+ * both triangles before averaging roundoff; never treat a general matrix as
+ * Hermitian by reading just its lower triangle. */
+function _hermitianEigen(A: any, computeVectors: boolean): any {
+  valueLib.requireMatrix(A, 'eigh');
+  A = valueLib._logicalDense(A);
+  const n = A.shape[0];
+  if (n !== A.shape[1]) throw new Error('eigh: A must be square');
+  let scale = 0;
+  for (let i = 0; i < A.data.length; i++) {
+    const ar = A.data[i], ai = A.im?.[i] ?? 0;
+    if (!Number.isFinite(ar) || !Number.isFinite(ai)) throw new Error('eigh: A must be finite');
+    scale = Math.max(scale, Math.abs(ar), Math.abs(ai));
+  }
+  scale ||= 1;
+  const tolerance = 64 * Number.EPSILON * Math.max(1, n);
+  for (let i = 0; i < n; i++) for (let j = i; j < n; j++) {
+    const a = i * n + j, b = j * n + i;
+    if (Math.abs(A.data[a] / scale - A.data[b] / scale) > tolerance
+        || Math.abs((A.im?.[a] ?? 0) / scale + (A.im?.[b] ?? 0) / scale) > tolerance) {
+      throw new Error('eigh: A must be symmetric or Hermitian');
+    }
+  }
+  const f = A.im ? require('./hermitian-eigen.ts').eigen(A, computeVectors, scale)
+    : _jacobiSymmetric(A, computeVectors, 8 * Number.EPSILON);
+  const order = Array.from({ length: n }, (_, j) => j).sort((a, b) => f.values[a] - f.values[b]);
+  const values = _vecValue(Float64Array.from(order, j => f.values[j]), n);
+  if (!computeVectors) return values;
+  const source = A.im ? f.vectors : _matValue(f.vectors, n, n);
+  const re = new Float64Array(n * n), im = A.im ? new Float64Array(n * n) : null;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    re[i * n + j] = source.data[i * n + order[j]];
+    if (im) im[i * n + j] = source.im[i * n + order[j]];
+  }
+  // Fix the arbitrary phase at the largest coordinate, breaking equal-magnitude
+  // ties by the first row. This leaves repeated eigenspaces unconstrained.
+  for (let j = 0; j < n; j++) {
+    let pivot = 0, size = -1;
+    for (let i = 0; i < n; i++) {
+      const norm = Math.hypot(re[i * n + j], im?.[i * n + j] ?? 0);
+      if (norm > size) { size = norm; pivot = i; }
+    }
+    const at = pivot * n + j, pr = re[at] / size, pi = (im?.[at] ?? 0) / size;
+    for (let i = 0; i < n; i++) {
+      const index = i * n + j, ar = re[index], ai = im?.[index] ?? 0;
+      re[index] = ar * pr + ai * pi;
+      if (im) im[index] = ai * pr - ar * pi;
+    }
+    re[at] = size;
+    if (im) im[at] = 0;
+  }
+  return { values, vectors: im ? valueLib.complexValue(re, im, [n, n]) : _matValue(re, n, n) };
+}
+
+function _eigh(A: any): any { return _hermitianEigen(A, true); }
+function _eigvalsh(A: any): any { return _hermitianEigen(A, false); }
 
 module.exports = {
   _lu,
@@ -823,6 +915,10 @@ module.exports = {
   _eigmin,
   _svd,
   _rank,
+  _pinv,
+  _cond,
+  _eigh,
+  _eigvalsh,
   // Test-only / internal helpers
   _internal: {
     _matmul,

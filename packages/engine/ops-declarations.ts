@@ -2712,6 +2712,7 @@ function _broadcastLogical(ir: any, ctx: any): any {
       } else if (kwargs[surface] != null) sources[i] = kwargs[surface];
       /* c8 ignore next 3 -- defensive: internal-placeholder-name fallback and the missing-argument guard (surface-name match is the exercised path) */
       else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
+      else if (i >= (fn.minArgs ?? fn.params.length)) sources[i] = { kind: 'lit', value: undefined };
       else throw new Error('broadcast: no argument for parameter '
         + (surface || fn.params[i]));
     }

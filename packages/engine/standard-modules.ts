@@ -642,14 +642,8 @@ function _registerParticlePhysics() {
 // Matrix factorisations, decompositions, and operations not in `base`.
 // Spec §09. Multi-output decompositions return records.
 //
-// Initial coverage (M-sized commit landing the foundations):
-//   - lu(A)        → record(P, L, U) with P·A = L·U
-//   - kron(A, B)   → Kronecker tensor product
-//   - matexp(A)    → matrix exponential via scaling + squaring Padé(13)
-//
-// Follow-up commits add qr / lstsq, symmetric eigen / eigmax / eigmin,
-// svd / rank — each algorithm class as its own commit per the
-// per-significant-step rule.
+// Factor records remain ordinary records. Solvers reuse those factors, while
+// rank, least squares, pseudoinversion and conditioning share the economy SVD.
 
 const extLinalg = require('./ext-linalg.ts');
 
@@ -695,17 +689,71 @@ function _registerExtLinearAlgebra() {
     impl: extLinalg._matexp,
   });
 
-  // lstsq(A, b) — minimum-norm least-squares via SVD. b is a length-m
-  // vector; result x is a length-k vector minimising ||A·x - b||₂.
+  // Optional cutoffs share one SVD rule: s>max(atol,rtol*smax), with -1
+  // selecting max(m,n)*epsilon. RHS rank is refined at ordinary call sites.
   const dynVec = T.array(1, ['%dynamic'], T.REAL);
+  const cutoffs = [
+    { name: 'rtol', type: T.REAL, optional: true },
+    { name: 'atol', type: T.REAL, optional: true },
+  ];
   bindings.set('lstsq', {
     kind: 'function',
-    sig: T.funcType(
-      [{ name: 'A', type: complexMat }, { name: 'b', type: complexVec }],
-      complexVec,
-    ),
+    sig: { ...T.funcType(
+      [{ name: 'A', type: complexMat }, { name: 'b', type: T.any() }, ...cutoffs], complexVec,
+    ), rhsResult: { input: 'b', rowsFrom: 'A', axis: 1 } },
     realResult: dynVec,
     impl: extLinalg._lstsq,
+  });
+
+  const solves = require('./ext-linalg-solves.ts');
+  bindings.set('solve_triangular', {
+    kind: 'function',
+    sig: { ...T.funcType([
+      { name: 'A', type: complexMat }, { name: 'b', type: T.any() },
+      { name: 'lower', type: T.BOOLEAN, optional: true, fixed: true },
+      { name: 'unit_diagonal', type: T.BOOLEAN, optional: true, fixed: true },
+    ], complexVec), rhsResult: { input: 'b' } },
+    realResult: dynVec,
+    impl: solves.solveTriangular,
+  });
+  bindings.set('lu_solve', {
+    kind: 'function',
+    sig: { ...T.funcType([
+      { name: 'factors', type: T.record({ P: dynMat, L: complexMat, U: complexMat }) },
+      { name: 'b', type: T.any() },
+    ], complexVec), rhsResult: { input: 'b' } },
+    realResult: dynVec,
+    impl: solves.luSolve,
+  });
+  bindings.set('cholesky_solve', {
+    kind: 'function',
+    sig: { ...T.funcType([
+      { name: 'L', type: complexMat }, { name: 'b', type: T.any() },
+    ], complexVec), rhsResult: { input: 'b' } },
+    realResult: dynVec,
+    impl: solves.choleskySolve,
+  });
+  bindings.set('eigh', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: complexMat }], T.record({ values: dynVec, vectors: complexMat })),
+    realResult: T.record({ values: dynVec, vectors: dynMat }),
+    impl: extLinalg._eigh,
+  });
+  bindings.set('eigvalsh', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: complexMat }], dynVec),
+    impl: extLinalg._eigvalsh,
+  });
+  bindings.set('pinv', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: complexMat }, ...cutoffs], complexMat),
+    realResult: dynMat,
+    impl: extLinalg._pinv,
+  });
+  bindings.set('cond', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: complexMat }], T.REAL),
+    impl: extLinalg._cond,
   });
 
   // Real matrices can have complex spectra, so the eigen result uses a
@@ -747,7 +795,7 @@ function _registerExtLinearAlgebra() {
   // tolerance (matches NumPy / Octave defaults).
   bindings.set('rank', {
     kind: 'function',
-    sig: T.funcType([{ name: 'A', type: complexMat }], T.INTEGER),
+    sig: T.funcType([{ name: 'A', type: complexMat }, ...cutoffs], T.INTEGER),
     impl: extLinalg._rank,
   });
 
@@ -802,6 +850,18 @@ function _registerSpecialFunctions() {
   bindings.set('betainc', { kind: 'function', sig: T.funcType([
     { name: 'a', type: T.REAL }, { name: 'b', type: T.REAL }, { name: 'x', type: T.REAL },
   ], T.REAL), impl: (a: number, b: number, x: number) => require('./forward-cdf.ts').cdf('Beta', x, { alpha: a, beta: b }) });
+  const extensions = require('./special-functions.ts');
+  for (const [name, parameters] of [
+    ['gammaincc', ['a', 'x']], ['log_gammainc', ['a', 'x']], ['log_gammaincc', ['a', 'x']],
+    ['betaincc', ['a', 'b', 'x']], ['log_betainc', ['a', 'b', 'x']], ['log_betaincc', ['a', 'b', 'x']],
+    ['beta', ['a', 'b']], ['logbeta', ['a', 'b']],
+    ['bessel_i_scaled', ['v', 'z']], ['bessel_k_scaled', ['v', 'z']],
+    ['log_bessel_i', ['v', 'z']], ['log_bessel_k', ['v', 'z']], ['log_ndtr', ['x']],
+  ] as Array<[string, string[]]>) bindings.set(name, {
+    kind: 'function', impl: extensions[name],
+    sig: T.funcType(parameters.map(name => ({ name, type: T.REAL })),
+      name === 'bessel_i_scaled' ? T.COMPLEX : T.REAL),
+  });
   registerStandardModule({
     name: 'special-functions',
     compat: '0.1',

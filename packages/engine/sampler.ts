@@ -2578,14 +2578,14 @@ const { _evalAggregate } = _aggregate;
 // `loc`.
 /** §04 records/tables bind by surface name when the interface excludes unary positional calls.
  * A complex scalar's planar representation is not a record. */
-function _callSplatFields(value: any, argIR: any, names: string[], label: string): any {
+function _callSplatFields(value: any, argIR: any, names: string[], label: string, required = names): any {
   const recordType = argIR.meta?.type?.kind === 'record';
   const record = value && typeof value === 'object'
     && !valueLib.isValue(value) && !Array.isArray(value)
     && !ArrayBuffer.isView(value) && (recordType || !_isComplex(value));
   const fields = value?.__table__ === true ? value.columns : (record ? value : null);
-  if (fields && (Object.keys(fields).length !== names.length
-      || names.some((name) => !Object.prototype.hasOwnProperty.call(fields, name)))) {
+  if (fields && (Object.keys(fields).some(name => !names.includes(name))
+      || required.some((name) => !Object.prototype.hasOwnProperty.call(fields, name)))) {
     throw new Error(`evaluateCall: '${label}' record/table fields do not match its arguments`);
   }
   return fields;
@@ -2656,7 +2656,8 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
     }
     const fields = !require('./types.ts').acceptsPositional(desc.sig || { inputs }, 1)
       && _callSplatFields(soleValue, positional[0],
-      inputs.map((input: any) => input.name), `${modAlias}.${bindingName}`);
+      inputs.map((input: any) => input.name), `${modAlias}.${bindingName}`,
+      inputs.filter((input: any) => !input.optional).map((input: any) => input.name));
     if (fields) {
       return desc.impl(...inputs.map((input: any) => argument(fields[input.name], input)));
     }
@@ -2667,8 +2668,13 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
     let argIR: any;
     if (paramName in kwargs)          argIR = kwargs[paramName];
     else if (i < positional.length)   argIR = positional[i];
+    else if (inputs[i].optional) { callArgs.push(undefined); continue; }
     else throw new Error("evaluateCall: '" + modAlias + "."
       + bindingName + "' missing argument '" + paramName + "'");
+    // Synthetic callable wrappers retain optional parameters as local refs. An
+    // omitted parameter is absent from the invocation environment, not zero.
+    if (inputs[i].optional && argIR.kind === 'ref' && argIR.ns === '%local'
+        && env[argIR.name] === undefined) { callArgs.push(undefined); continue; }
     callArgs.push(argument(sole ? soleValue : evaluateObject(argIR, env), inputs[i]));
   }
   return desc.impl.apply(null, callArgs);
@@ -2772,6 +2778,7 @@ function _synthStdModuleFn(refIR: any, env: any): any {
     params,
     paramKwargs,
     paramName: params[0],
+    minArgs: desc.sig.inputs.filter((input: any) => !input.optional).length,
   };
 }
 
@@ -2862,7 +2869,8 @@ function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, res
   function evalBody() {
     if (bindRowByName) {
       const row = elemEnv[fn.params[0]];
-      const fields = _callSplatFields(row, {}, fn.paramKwargs || fn.params, 'broadcast');
+      const fields = _callSplatFields(row, {}, fn.paramKwargs || fn.params, 'broadcast',
+        (fn.paramKwargs || fn.params).slice(0, fn.minArgs ?? fn.params.length));
       if (!fields) throw new Error('broadcast: expected a row record for named inputs');
       for (let p = 0; p < fn.params.length; p++) {
         elemEnv[fn.params[p]] = fields[(fn.paramKwargs || fn.params)[p]];
@@ -3022,7 +3030,8 @@ function evaluateCall(ir: any, env: any): any {
       const soleValue = sole ? evaluateObject(posArgs[0], env) : undefined;
       const fields = sole && !require('./types.ts').acceptsPositional(fn, 1)
         ? _callSplatFields(soleValue, posArgs[0],
-        params.map((p, i) => paramKwargs[i] || p), ir.target?.name || '<expression>') : null;
+        params.map((p, i) => paramKwargs[i] || p), ir.target?.name || '<expression>',
+        params.slice(0, fn.minArgs ?? params.length).map((p, i) => paramKwargs[i] || p)) : null;
       if (!fields && posArgs.length && !require('./types.ts').acceptsPositional(fn, posArgs.length)) {
         throw new Error('evaluateCall: callable does not admit these positional inputs');
       }

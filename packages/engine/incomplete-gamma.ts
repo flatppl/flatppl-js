@@ -5,7 +5,12 @@
 // values. Temme's uniform expansion handles shapes too large for a series.
 const V = require('./value.ts');
 const logGamma = (a: number) => require('./value-ops.ts').loggammaElem(V.scalar(a)).data[0];
-const erfc = (x: number) => 2 * require('./forward-cdf.ts').CDF.Normal(-x * Math.SQRT2, { mu: 0, sigma: 1 });
+const erfcx = require('@stdlib/math-base-special-erfcx');
+
+/** log(1-exp(x)) for x <= 0, retaining either small complementary tail. */
+function log1mexp(x: number): number {
+  return x < -Math.LN2 ? Math.log1p(-Math.exp(x)) : Math.log(-Math.expm1(x));
+}
 
 function log1pmx(x: number): number {
   if (Math.abs(x) >= 0.125) return Math.log1p(x) - x;
@@ -45,17 +50,17 @@ function polynomial(coefficients: number[], x: number): number {
 }
 
 /** DLMF 5.7.3 retains log Γ(1+a) when adding a to one would lose bits. */
-function logGamma1p(a: number): number {
-  if (a >= 0.125) return logGamma(1 + a);
+function logGamma1pOverA(a: number): number {
+  if (a >= 0.125) return logGamma(1 + a) / a;
   const zeta = [0.8224670334241132, -0.40068563438653143, 0.27058080842778455,
     -0.20738555102867399, 0.1695571769974082, -0.14404989676884612,
     0.12550966952474304, -0.11133426586956469, 0.10009945751278181,
     -0.09095401714582904, 0.083353840546109, -0.0769325164113522,
     0.07143294629536134, -0.06666870588242047, 0.06250095514121304];
-  return a * (-0.5772156649015329 + a * polynomial(zeta, a));
+  return -0.5772156649015329 + a * polynomial(zeta, a);
 }
 
-function temme(a: number, x: number, upper: boolean): number {
+function logTemme(a: number, x: number, upper: boolean): number {
   const delta = (x - a) / a;
   const eta = Math.sign(delta) * Math.sqrt(-2 * log1pmx(delta));
   const c0 = Math.abs(delta) < 0.01 ? polynomial([-1 / 3, 1 / 12, -23 / 540,
@@ -64,29 +69,40 @@ function temme(a: number, x: number, upper: boolean): number {
   const c1 = Math.abs(delta) < 0.01 ? polynomial([-1 / 540, -1 / 288, 23 / 6048,
     -3733 / 1088640, 3253 / 1088640, -135719 / 52254720, 176215213 / 77598259200], delta)
     : 1 / eta ** 3 - 1 / delta ** 3 - 1 / delta ** 2 - 1 / (12 * delta);
-  const correction = Math.exp(-a * eta * eta / 2 - (Math.log(2 * Math.PI) + Math.log(a)) / 2) * (c0 + c1 / a);
   const argument = eta * Math.sqrt(a / 2);
-  return upper ? erfc(argument) / 2 + correction : erfc(-argument) / 2 - correction;
+  // Factor out exp(-argument²) before adding the correction. The small
+  // tail stays representable as a log even when both ordinary terms vanish.
+  const smallUpper = argument >= 0;
+  const correction = (c0 + c1 / a) / Math.sqrt(2 * Math.PI * a);
+  const logSmall = -argument * argument
+    + Math.log(erfcx(Math.abs(argument)) / 2 + (smallUpper ? correction : -correction));
+  return upper === smallUpper ? logSmall : log1mexp(logSmall);
 }
 
 /** The upper continued fraction keeps tiny survival probabilities in log scale. */
-function regularizedGamma(a: number, x: number, upper = false): number {
+function logRegularizedGamma(a: number, x: number, upper = false): number {
   if (!(a > 0) || !(x >= 0)) return NaN;
-  if (x === 0) return upper ? 1 : 0;
-  if (x === Infinity) return a === Infinity ? NaN : upper ? 0 : 1;
-  if (a === Infinity) return upper ? 1 : 0;
-  if (a >= 1e7) return temme(a, x, upper);
-  if (upper && a < 0.5 && x < 1) {
+  if (x === 0) return upper ? 0 : -Infinity;
+  if (x === Infinity) return a === Infinity ? NaN : upper ? -Infinity : 0;
+  if (a === Infinity) return upper ? 0 : -Infinity;
+  // Far from the transition, the series/fraction converge quickly and avoid
+  // eta's singular limit when (x-a)/a rounds to -1.
+  if (a >= 1e7 && Math.abs(x - a) <= a / 2) return logTemme(a, x, upper);
+  if (a < 0.5 && x <= 1) {
     // Complement the alternating lower-gamma series before its leading one
     // rounds away a small upper tail. This is stable even as a tends to zero.
-    const log = a * Math.log(x) - logGamma1p(a);
+    const coefficient = Math.log(x) - logGamma1pOverA(a), log = a * coefficient;
     let term = -x, sum = term / (a + 1);
     for (let n = 2; n < 1000; n++) {
       term *= -x / n;
       const add = term / (a + n); sum += add;
       if (Math.abs(add) <= Number.EPSILON * Math.abs(sum)) break;
     }
-    return -Math.expm1(log) - a * Math.exp(log) * sum;
+    // Factor out a before forming Q; Q may be below the subnormal range.
+    const exprel = log === 0 ? 1 : Math.expm1(log) / log;
+    const logQ = Math.log(a) + Math.log(-exprel * coefficient - Math.exp(log) * sum);
+    const logP = log + Math.log1p(a * sum);
+    return upper ? logP < -Math.LN2 ? log1mexp(logP) : logQ : logP;
   }
   const logScale = prefactor(a, x);
   if (x < a + 1) {
@@ -95,7 +111,7 @@ function regularizedGamma(a: number, x: number, upper = false): number {
       term *= x / (a + n); sum += term;
       if (Math.abs(term) <= Number.EPSILON * Math.abs(sum)) {
         const logP = logScale + Math.log(sum);
-        return upper ? -Math.expm1(logP) : Math.exp(logP);
+        return upper ? log1mexp(logP) : logP;
       }
     }
   } else {
@@ -109,11 +125,15 @@ function regularizedGamma(a: number, x: number, upper = false): number {
       const delta = d * c; h *= delta;
       if (Math.abs(delta - 1) <= 4 * Number.EPSILON) {
         const logQ = logScale + Math.log(h);
-        return upper ? Math.exp(logQ) : -Math.expm1(logQ);
+        return upper ? logQ : log1mexp(logQ);
       }
     }
   }
   throw new Error('Regularized gamma did not converge');
+}
+
+function regularizedGamma(a: number, x: number, upper = false): number {
+  return Math.exp(logRegularizedGamma(a, x, upper));
 }
 
 /** Invert P/Q with a library seed and safeguarded Newton refinement. The
@@ -146,4 +166,6 @@ function inverseRegularizedGamma(a: number, p: number, upper = false): number {
   throw new Error('Inverse regularized gamma did not converge');
 }
 
-module.exports = { regularizedGamma, inverseRegularizedGamma, log1pmx, stirlingRemainder };
+module.exports = { regularizedGamma, logRegularizedGamma, inverseRegularizedGamma,
+  log1pmx, log1mexp, stirlingRemainder, logGamma1pOverA,
+  logGamma1p: (a: number) => a * logGamma1pOverA(a) };
