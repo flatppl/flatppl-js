@@ -55,6 +55,10 @@ test('HEP analytical CDFs and quantiles match independent references', () => {
     }
     const median = dist.quantile(0.5);
     assert.ok(Math.abs(dist.cdf(median) - 0.5) < 2e-8, `${c.name} median`);
+    assert.equal(dist.cdf(dist.support[0]), 0, `${c.name} lower support`);
+    assert.equal(dist.cdf(dist.support[1]), 1, `${c.name} upper support`);
+    assert.equal(dist.quantile(0), dist.support[0], `${c.name} zero quantile`);
+    assert.equal(dist.quantile(1), dist.support[1], `${c.name} unit quantile`);
   }
 });
 
