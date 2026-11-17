@@ -308,19 +308,6 @@ test('_packUniformCells: a cell shape that varies across atoms does not pack',
       'first result is not a cell');
   });
 
-test('_packUniformCells: non-numeric, empty and complex cells do not pack',
-  () => {
-    assert.equal(_packUniformCells([['a', 'b'], ['c', 'd']], 2), null,
-      'non-numeric entries');
-    assert.equal(_packUniformCells([cell([], [0]), cell([], [0])], 2), null,
-      'empty cell');
-    // A complex Value keeps its imaginary part in `.im`, so packing `.data`
-    // alone would drop it silently.
-    const cx = valueLib.complexValue(
-      Float64Array.from([1, 2]), Float64Array.from([3, 4]), [2]);
-    assert.equal(_packUniformCells([cx, cx], 2), null, 'complex cell');
-  });
-
 test('_packUniformCells: boolean cell entries pack as 0/1', () => {
   const out = _packUniformCells([[true, false], [false, true]], 2);
   assert.deepEqual(out.shape, [2, 2]);

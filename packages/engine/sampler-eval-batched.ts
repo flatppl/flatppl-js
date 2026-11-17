@@ -1243,11 +1243,11 @@ function _touchesAtomRef(ir: any, refArrays: any, overlay: any): boolean {
 // numeric cell at all. A bare JS/typed array is a rank-1 cell; a Value
 // carries its own shape, so a rank-2 result stays rank-2.
 //
-// A complex Value carries its imaginary part out of band, so packing only
-// `.data` would drop it silently — refuse and leave it to the caller.
+// Planar complex cells have the same logical cell shape as real cells; the
+// packer below carries their imaginary plane and promotes real cells to zero.
 function _cellShapeOf(s: any) {
   if (Array.isArray(s) || (s && s.BYTES_PER_ELEMENT !== undefined)) return [s.length];
-  if (valueLib.isValue(s) && s.shape.length >= 1 && s.dtype !== 'complex') return s.shape;
+  if (valueLib.isValue(s) && s.shape.length >= 1) return s.shape;
   return null;
 }
 
@@ -1277,7 +1277,6 @@ function _packUniformCells(out: any[], N: any): any {
   const cell0 = _cellShapeOf(out[0]);
   if (cell0 === null) return null;
   const cellLen = cell0.reduce((a: any, b: any) => a * b, 1);
-  if (cellLen === 0) return null;
   for (let i = 0; i < N; i++) {
     const s = out[i];
     // A transposed matrix cell stores its entries unswapped, so packing `data`
@@ -1297,17 +1296,23 @@ function _packUniformCells(out: any[], N: any): any {
     }
   }
   const data = new Float64Array(N * cellLen);
+  let imag: Float64Array | null = null;
   for (let i = 0; i < N; i++) {
     const s = out[i];
     const src = valueLib.isValue(s) ? s.data : s;
     const base = i * cellLen;
     for (let j = 0; j < cellLen; j++) data[base + j] = +src[j];
+    if (valueLib.isComplexValue(s)) {
+      if (imag === null) imag = new Float64Array(N * cellLen);
+      imag.set(valueLib.readComplex(s).im, base);
+    }
   }
   // The cells keep their levels (§03 vector of vectors, a splitblocks outer
   // array) below the atom level, when every cell has the same levels.
   const levels = valueLib.levelAxesOf(out[0]).join(',');
   const same = out.every((s: any) => valueLib.levelAxesOf(s).join(',') === levels);
-  return valueLib.batchOf({ shape: [N, ...cell0], data },
+  const value = imag ? valueLib.complexValue(data, imag, [N, ...cell0]) : { shape: [N, ...cell0], data };
+  return valueLib.batchOf(value,
     same ? valueLib.cellLevelsOf(valueLib.isValue(out[0]) ? out[0] : cell0) : []);
 }
 

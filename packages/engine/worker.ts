@@ -272,6 +272,12 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
         throw new Error('evaluateN: Value result has unexpected shape ['
           + result.shape.join(',') + '] for count=' + count);
       }
+    } else if (Array.isArray(result) && result.length === count
+        && result.every((v: any) => v && typeof v === 'object' && !Array.isArray(v)
+          && !ArrayBuffer.isView(v) && !valueLib.isValue(v) && !v.__table__)) {
+      // Record-valued numerical functions retain whole atoms. The existing
+      // measureFromAtoms consumer packs their fields, including matrix planes.
+      return { type: 'samples', samples: result, logWeights: null };
     } else {
       throw new Error('evaluateN: expression produced non-scalar per-atom '
         + 'result (got ' + (typeof result) + '); only scalar exprs are '

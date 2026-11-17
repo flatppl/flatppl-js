@@ -54,6 +54,11 @@ shares the supplied Philox stream across each law's mixture or transform.
 ARGUS normalization and sampling cover negative, zero and positive slopes.
 ContinuedPoisson remains density-only because its measure is not normalized.
 
+Batched numeric cell packing retains both planes of complex matrices, including
+real cells embedded into a complex batch. Record-valued numerical calls retain
+whole atoms through the existing record-measure path; record field access uses
+the common Value row slicer so it preserves imaginary planes and layout tags.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.
