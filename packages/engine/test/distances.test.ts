@@ -53,3 +53,23 @@ B = d.euclidean.([[0, 0], [3, 4]], [[0, 4]])
   }
   assert.deepEqual(Array.from((await ctx.getMeasure('B')).samples), [4, 3]);
 });
+
+test('empty collections, zero norms and tuple-held callbacks preserve their domains', async () => {
+  const { ctx } = makeMatCtx(prefix + `
+empty = fill([0.0, 0.0], 0)
+P = d.pairwise_distance(d.euclidean, empty)
+C = d.cross_distance(d.euclidean, [[1.0, 2.0]], empty)
+metrics = [d.euclidean(zeros(0), zeros(0)), d.manhattan(zeros(0), zeros(0)),
+  d.chebyshev(zeros(0), zeros(0)), d.minkowski([0, 0], [1, 4], 0.5),
+  d.cosine([1e200, 0], [1e200, 0])]
+callbacks = (d.euclidean, 2)
+Q = d.pairwise_distance(callbacks[1], [[0, 0], [3, 4]])
+`, { sampleCount: 1 });
+  const p = await ctx.getMeasure('P'), c = await ctx.getMeasure('C');
+  assert.deepEqual(p.intrinsicShape, [0, 0]);
+  assert.deepEqual(c.intrinsicShape, [1, 0]);
+  assert.equal(p.samples.length, 0);
+  assert.equal(c.samples.length, 0);
+  assert.deepEqual(Array.from((await ctx.getMeasure('metrics')).samples), [0, 0, 0, 9, 0]);
+  assert.deepEqual(Array.from((await ctx.getMeasure('Q')).samples), [0, 5, 5, 0]);
+});
