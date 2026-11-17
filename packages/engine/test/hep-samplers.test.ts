@@ -41,9 +41,13 @@ a, s = rand(iid(M, 8), rnginit(117))
 b, t = rand(iid(M, 8), s)
 all_draws, r = rand(iid(M, 16), rnginit(117))
 joined = cat(a, b)
+next_a, end_a = rand(M, t)
+next_b, end_b = rand(M, r)
 `, { sampleCount: 1 });
     assert.deepEqual(Array.from((await ctx.getMeasure('joined')).samples),
       Array.from((await ctx.getMeasure('all_draws')).samples), c.name);
+    assert.deepEqual(Array.from((await ctx.getMeasure('next_a')).samples),
+      Array.from((await ctx.getMeasure('next_b')).samples), `${c.name} successor state`);
   }
 });
 
