@@ -556,7 +556,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     //     function returning a measure (the dist call's domain
     //     comes from the descriptor's `domain` field).
     if (desc.kind === 'function' && desc.sig) {
-      return desc.sig;
+      return desc.realResult ? { ...desc.sig, realResult: desc.realResult } : desc.sig;
     }
     if (desc.kind === 'value' && desc.valueType) {
       return desc.valueType;
@@ -5716,7 +5716,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(T.failed('not callable'), expr);
     }
 
-    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg, member?.realResult);
+    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg, calleeType.realResult);
   }
 
   const reinferring = new Set<any>();

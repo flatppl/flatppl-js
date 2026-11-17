@@ -88,3 +88,19 @@ U=f.U`, { sampleCount: 1 });
   close((await ctx.getMeasure('U')).samples, [0, 1, 2, 0, 3, 0, 0, 0, 4]);
   close((await ctx.getMeasure('U')).imag, [0, 1, 0, 0, 0, 7, 0, 0, -14 / 3]);
 });
+
+test('re-exported numerical functions retain real result specialization', async () => {
+  const { ctx } = makeMatCtx(`
+m=load_module("factors.flatppl")
+alias=m.lu
+A=rowstack([[4.0,3.0],[2.0,1.0]])
+f=m.lu(A)
+g=alias(A)
+x=linsolve(f.L,[1.0,2.0])
+y=linsolve(g.L,[1.0,2.0])`, { sampleCount: 1, bundle: { sources: {
+    'factors.flatppl': HEAD + 'lu=e.lu',
+  } } });
+  // L21=1/2, so forward substitution gives (1, 3/2).
+  close((await ctx.getMeasure('x')).samples, [1, 1.5]);
+  close((await ctx.getMeasure('y')).samples, [1, 1.5]);
+});
