@@ -13,11 +13,11 @@ lo=e.eigmin(A)
 hi=e.eigmax(A)`, { sampleCount: 1 });
   // The independent block spectrum is {1e10, +i·1e-8, -i·1e-8}.
   const w = await ctx.getMeasure('w');
-  const pair = Array.from(w.imag).filter((x: number) => Math.abs(x) > 0).sort((a: number, b: number) => a - b);
+  const pair = Array.from<number>(w.imag).filter(x => Math.abs(x) > 0).sort((a, b) => a - b);
   assert.equal(pair.length, 2);
   assert.ok(Math.abs(pair[0] / -1e-8 - 1) < 2e-13);
   assert.ok(Math.abs(pair[1] / 1e-8 - 1) < 2e-13);
-  assert.ok(Array.from(w.samples).some((x: number) => x === 1e10));
+  assert.ok(Array.from<number>(w.samples).some(x => x === 1e10));
   // These correctly computed complex values admit neither real ordering.
   await assert.rejects(ctx.getMeasure('lo'));
   await assert.rejects(ctx.getMeasure('hi'));
