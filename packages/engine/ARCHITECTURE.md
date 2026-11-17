@@ -49,6 +49,11 @@ and Airy kernels live in `bessel-real-order.ts`; J/I use a complex codomain for
 their principal branch on negative real arguments. Incomplete gamma/beta share
 the existing scalar CDF implementations in `forward-cdf.ts`.
 
+`hep-sampling.ts` supplies the seven normalized §09 HEP samplers. The registry
+shares the supplied Philox stream across each law's mixture or transform.
+ARGUS normalization and sampling cover negative, zero and positive slopes.
+ContinuedPoisson remains density-only because its measure is not normalized.
+
 Batched numeric cell packing retains both planes of complex matrices, including
 real cells embedded into a complex batch. Record-valued numerical calls retain
 whole atoms through the existing record-measure path; record field access uses

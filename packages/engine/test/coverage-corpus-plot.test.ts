@@ -69,7 +69,7 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
   beam_bunch:          ['s', 'b', 'sig_shape', 'bkg_shape', 'intensity', 'prior', 'posterior'],
   kscan_walk:          ['dts', 'traj_obs', 'prior', 'posterior'],
   mv_mixture_sample:   ['mus', 'cA', 'cB', 'covs', 'w', 'mix', 'y', 'y1', 'y2'],
-  b_mass_peak:         ['m_obs', 'N', 'f', 'prior'],
+  b_mass_peak:         ['m_obs', 'N', 'f', 'prior', 'posterior'],
 };
 
 // Bindings that still stop at an engine gap, with the substring their error
@@ -81,7 +81,6 @@ const EXPECTED_GAPS: Record<string, Record<string, string>> = {
   beam_bunch:         { events: 'per-atom (draw-dependent) intensity is deferred' },
   paired_assay:       { tab: 'iid over a record measure' },
   mv_mixture_sample:  { draws: '' },
-  b_mass_peak:        { posterior: '' },
 };
 
 function ctxFor(src: string) {
@@ -111,17 +110,9 @@ function ctxFor(src: string) {
   return { ctx, lifted, built };
 }
 
-// b_mass_peak reaches §09 standard-module DISTRIBUTION members, which have
-// no surface-language measure lowering in this engine (only the FlatPDL
-// `builtin_logdensityof(CrystalBall, …)` the determiniser emits). Recorded
-// in TODO-flatppl-js.md; pinned WITH its message so it cannot acquire a new
-// error quietly. paired_assay's table-in-record refusal is recorded there
-// too. stdmod_interp_poly6 reaches the §09 `distances` module, which this
-// engine does not provide yet (TODO-flatppl-js.md).
+// paired_assay's table-in-record refusal is recorded in TODO-flatppl-js.md.
 const KNOWN: Record<string, RegExp> = {
-  b_mass_peak: /weighted: arg 2 expects measure, got deferred/,
   paired_assay: /a table may not appear inside a record/,
-  stdmod_interp_poly6: /standard module 'distances@0.1' is not provided by this engine/,
 };
 
 // A shape the viewer's renderers read: samples, a shaped value, record fields,

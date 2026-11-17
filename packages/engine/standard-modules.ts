@@ -620,13 +620,17 @@ function _registerParticlePhysics() {
     impl: (tj: number, tm1: number, tm2: number, a: number, cb: number, g: number) =>
       _wignerDDoubled('wignerD_doublearg', tj, tm1, tm2, a, cb, g),
   });
-  // interp_* land here; the §09 distributions (CrystalBall, Argus, Voigtian,
-  // …) live in the sampler REGISTRY (density layer) and dispatch by name.
+  const distributions = require('./builtins.ts').PARTICLE_PHYSICS_DISTRIBUTIONS;
+  const parameters = require('./builtins.ts').PARTICLE_PHYSICS_PARAMS;
+  for (const name of distributions) {
+    bindings.set(name, { kind: 'distribution', op: name,
+      sig: T.kernelType(parameters[name].map((name: string) => ({ name, type: T.REAL })), T.measure(T.REAL)) });
+  }
   registerStandardModule({
     name: 'particle-physics',
     compat: '0.1',
     bindings,
-    distributions: require('./builtins.ts').PARTICLE_PHYSICS_DISTRIBUTIONS,
+    distributions,
   });
 }
 
