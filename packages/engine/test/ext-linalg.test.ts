@@ -369,11 +369,6 @@ test('eigen: 3x3 symmetric — round-trip A = V · diag(values) · V^T', () => {
   assertClose(VdVt, A_data, 1e-10);
 });
 
-test('eigen: rejects non-symmetric matrix', () => {
-  const A = matVal(2, 2, [1, 2, 3, 4]);
-  assert.throws(() => extLinalg._eigen(A), /symmetric/);
-});
-
 test('eigmax / eigmin: matches min/max of eigen()', () => {
   const A = matVal(3, 3, [5, 1, 0, 1, 4, 1, 0, 1, 3]);
   const max = extLinalg._eigmax(A);

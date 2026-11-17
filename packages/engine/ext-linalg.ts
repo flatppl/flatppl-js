@@ -5,9 +5,9 @@
 // `ext-linear-algebra` standard module (spec §09).
 // =====================================================================
 //
-// Pure-algorithm leaf module — operates on row-major Float64Array data
-// (the §2.1 shape contract). value.ts resolves storage views at each
-// boundary; sampler-linalg supplies the existing LU primitive.
+// Numeric algorithms over row-major real and planar-complex Values (the
+// §2.1 shape contract). value.ts resolves storage views at each boundary;
+// the complex LU and general spectral paths have their own numeric leaves.
 //
 // Each function takes either flat data + shape or a Value, and returns
 // a fresh Value (or record-of-Values for multi-output decompositions).
@@ -396,11 +396,8 @@ function _lstsq(A: any, b: any): any {
 // than tridiagonal-QR for large n. Defer Householder-tridiag+QR until
 // a profile shows the n > 50 case.
 //
-// **NON-SYMMETRIC matrices are NOT supported.** The spec's `eigen`
-// op allows complex eigenvalues, which would require a complex-output
-// path the engine doesn't yet have for matrix returns. Throw with a
-// clear diagnostic; the symmetric case covers Bayesian covariance /
-// precision-matrix workflows, which is the common case.
+// The symmetric-real path remains the fast covariance-matrix case. General
+// real and complex matrices use unitary Schur iteration in general-eigen.ts.
 
 const _JACOBI_MAX_SWEEPS = 50;
 const _JACOBI_TOL_REL    = 1e-12;
@@ -525,14 +522,35 @@ function _jacobiSymmetric(A: any, computeVectors = true): {
 }
 
 function _eigen(A: any): any {
+  A = valueLib._logicalDense(A);
+  if (A.im || A.shape[0] !== A.shape[1] || !_isSymmetric(A, A.shape[0], 0)) {
+    return require('./general-eigen.ts').eigen(A);
+  }
   const { values, vectors, n } = _jacobiSymmetric(A);
   return {
-    values:  _vecValue(values, n),
-    vectors: _matValue(vectors!, n, n),
+    values:  valueLib.complexValue(values, new Float64Array(n), [n]),
+    vectors: valueLib.complexValue(vectors!, new Float64Array(n * n), [n, n]),
   };
 }
 
+function _generalEigenExtreme(A: any, maximum: boolean): number {
+  const { values } = require('./general-eigen.ts').eigen(A);
+  if (values.data.length === 0) throw new Error('eigenvalue extrema require a nonempty spectrum');
+  let scale = 0;
+  for (let i = 0; i < values.data.length; i++) scale = Math.max(scale, Math.hypot(values.data[i], values.im[i]));
+  let result = maximum ? -Infinity : Infinity;
+  for (let i = 0; i < values.data.length; i++) {
+    if (Math.abs(values.im[i]) > 64 * Number.EPSILON * scale) {
+      throw new Error('eigenvalue extrema are undefined for complex eigenvalues (spec §09)');
+    }
+    result = maximum ? Math.max(result, values.data[i]) : Math.min(result, values.data[i]);
+  }
+  return result;
+}
+
 function _eigmax(A: any): number {
+  A = valueLib._logicalDense(A);
+  if (A.im || !_isSymmetric(A, A.shape[0], 0)) return _generalEigenExtreme(A, true);
   const { values } = _jacobiSymmetric(A, false);
   let max = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] > max) max = values[i];
@@ -540,6 +558,8 @@ function _eigmax(A: any): number {
 }
 
 function _eigmin(A: any): number {
+  A = valueLib._logicalDense(A);
+  if (A.im || !_isSymmetric(A, A.shape[0], 0)) return _generalEigenExtreme(A, false);
   const { values } = _jacobiSymmetric(A, false);
   let min = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] < min) min = values[i];
