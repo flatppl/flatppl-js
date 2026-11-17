@@ -12,11 +12,11 @@ test('distance metrics match independent norms and KL values through qualified c
 norms = [d.euclidean([0, 0], [3, 4]), d.squared_euclidean([0, 0], [3, 4]),
   d.manhattan([0, 0], [3, 4]), d.chebyshev([0, 0], [3, 4]),
   d.minkowski(p = 3, u = [0, 0], v = [3, 4]), d.cosine([1, 0], [0, 1]),
-  d.jensenshannon([1, 0], [0, 1])]
+  d.jensenshannon([1, 0], [0, 1]), d.jensenshannon([1, 0, 0], [0, 1, 0])]
 large = d.euclidean([1e200, 0], [0, 1e200])
 near = d.jensenshannon([0.50000001, 0.49999999], [0.5, 0.5])
 `, { sampleCount: 1 });
-  const expected = [5, 25, 7, 4, Math.cbrt(91), 1, Math.sqrt(Math.log(2))];
+  const expected = [5, 25, 7, 4, Math.cbrt(91), 1, Math.sqrt(Math.log(2)), Math.sqrt(Math.log(2))];
   Array.from<number>((await ctx.getMeasure('norms')).samples).forEach((v, i) => close(v, expected[i]));
   close((await ctx.getMeasure('large')).samples[0] / 1e200, Math.sqrt(2));
   close((await ctx.getMeasure('near')).samples[0] / 1e-8, 1 / Math.sqrt(2), 1e-8);

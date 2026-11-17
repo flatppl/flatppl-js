@@ -98,8 +98,7 @@ function jensenShannon(u: unknown, v: unknown): number {
 
 /** A user distance need not be symmetric and need not vanish on the diagonal. */
 function crossDistance(distance: (u: unknown, v: unknown) => unknown, x: unknown, y: unknown): Value {
-  const xs = Array.isArray(x) && x.length === 0 ? { kind: 'js-array', items: x } : V.asVectorOfVectors(x);
-  const ys = Array.isArray(y) && y.length === 0 ? { kind: 'js-array', items: y } : V.asVectorOfVectors(y);
+  const xs = V.asVectorOfVectors(x), ys = V.asVectorOfVectors(y);
   if (!xs || !ys) throw new Error('distances: expected vectors of vectors');
   const n = V.vovLength(xs), m = V.vovLength(ys), data = new Float64Array(n * m);
   for (let i = 0; i < n; i++) {
