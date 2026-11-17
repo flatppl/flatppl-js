@@ -44,6 +44,11 @@ law, with explicit ordinary outer broadcasting.
 `standard-distances.ts` owns the nine §09 distance members. Higher-order module
 arguments use the ordinary callable evaluator and retain their captured values.
 
+The §09 special-functions module covers the full catalogue. Real-order Bessel
+and Airy kernels live in `bessel-real-order.ts`; J/I use a complex codomain for
+their principal branch on negative real arguments. Incomplete gamma/beta share
+the existing scalar CDF implementations in `forward-cdf.ts`.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.

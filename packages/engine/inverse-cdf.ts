@@ -7,10 +7,9 @@
 //
 //   1. Closed form              — Normal/LogNormal/Exponential/Uniform/HalfNormal/
 //                                 HalfCauchy/Logistic/Weibull/Pareto/Laplace/Dirac.
-//   2. Library inverse          — Beta (betaincinv) and Gamma (gammaincinv): the
-//                                 regularized-incomplete inverses @stdlib ships,
-//                                 accurate to scipy's ppf (verified) — no
-//                                 hand-rolled Newton needed.
+//   2. Special-function inverse — Beta uses the library inverse; Gamma refines
+//                                 its library seed against the stable P/Q seam
+//                                 in incomplete-gamma.ts.
 //   3. Numerical inversion      — `numericalQuantile`: monotone bracketed bisection
 //                                 on any user-supplied cdf, the last-resort path for
 //                                 a distribution with a cdf but no faster route.
@@ -21,7 +20,7 @@
 // conditionally-resolved params straight through.
 
 const stdlibErfcinv    = require('@stdlib/math-base-special-erfcinv');
-const stdlibGammaincinv = require('@stdlib/math-base-special-gammaincinv');
+const { inverseRegularizedGamma } = require('./incomplete-gamma.ts');
 const stdlibBetaincinv  = require('@stdlib/math-base-special-betaincinv');
 
 // Standard-normal quantile Φ⁻¹(p) = −√2·erfc⁻¹(2p) (spec §07 `probit`).
@@ -37,7 +36,7 @@ const QUANTILE: Record<string, (p: number, q: any) => number> = {
   Exponential: (p, q) => -Math.log1p(-p) / q.rate,
   Uniform:     (p, q) => q.lo + p * (q.hi - q.lo),
   Beta:        (p, q) => stdlibBetaincinv(p, q.alpha, q.beta),
-  Gamma:       (p, q) => stdlibGammaincinv(p, q.shape) / q.rate,   // shape/rate; gammaincinv is scale-1
+  Gamma:       (p, q) => inverseRegularizedGamma(q.shape, p) / q.rate,   // shape/rate; gammaincinv is scale-1
   HalfNormal:  (p, q) => q.sigma * probit(0.5 * (1 + p)),          // |N(0,σ)|: Φ⁻¹((1+p)/2)·σ
   HalfCauchy:  (p, q) => q.scale * Math.tan(0.5 * Math.PI * p),
   Logistic:    (p, q) => q.mu + q.s * Math.log(p / (1 - p)),
@@ -49,13 +48,13 @@ const QUANTILE: Record<string, (p: number, q: any) => number> = {
   Dirac:       (_p, q) => q.value,
   // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x);
   // Invert the upper gamma tail directly so tiny p is not lost in 1-p.
-  InverseGamma: (p, q) => q.scale / stdlibGammaincinv(p, q.shape, true),
+  InverseGamma: (p, q) => q.scale / inverseRegularizedGamma(q.shape, p, true),
   Cauchy: (p, q) => p === 0.5 ? q.location : p < 0.5
     ? q.location - q.scale / Math.tan(Math.PI * p)
     : q.location + q.scale / Math.tan(Math.PI * (1 - p)),
   // ChiSquared(k) ≡ Gamma(shape=k/2, rate=1/2); gammaincinv is scale-1 (rate-1),
   // so divide by rate=1/2 ⇔ multiply by 2. Verified vs scipy.stats.chi2(df=k).ppf.
-  ChiSquared: (p, q) => 2 * stdlibGammaincinv(p, q.k / 2),
+  ChiSquared: (p, q) => 2 * inverseRegularizedGamma(q.k / 2, p),
   // Standard StudentT(nu) (zero mean, unit scale, spec §08). Inverse via the
   // regularized-incomplete-beta identity: for T~t(nu), P(|T|>t) = I_z(nu/2,½)
   // with z = nu/(nu+t²); invert for t given the tail probability, then place

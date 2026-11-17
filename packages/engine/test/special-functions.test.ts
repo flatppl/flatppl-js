@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const sm = require('../standard-modules.ts');
 const { ctxFor } = require('./_ctx-factory.ts');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
 
 const SF = 'sf = standard_module("special-functions", "0.1")\n';
 
@@ -115,9 +116,101 @@ test('digamma and polygamma match the oracle', async () => {
   close(b[1], 0.2085478748734939, 1e-14, 'b[1]');
 });
 
-test('an unimplemented §09 member refuses by name', () => {
-  const { diagnostics } = processSource(SF + 'a = sf.bessel_j(1.0, 2.0)\n');
-  assert.equal(diagnostics.length, 1);
-  assert.match(diagnostics[0].message,
-    /'special-functions\.bessel_j' is not implemented by this engine/);
+test('all §09 special functions execute against independent SciPy values', async () => {
+  const fixtures = require('./fixtures/special-functions.json').cases;
+  const expressions = fixtures.map((c: any) => {
+    const call = `sf.${c.name}(${c.args.join(',')})`;
+    return c.name === 'bessel_j' || c.name === 'bessel_i' ? `real(${call})` : call;
+  });
+  const values = await value(SF + `a = [${expressions.join(',\n')}]`, 'a');
+  fixtures.forEach((c: any, i: number) => {
+    const tolerance = 3e-12 * Math.max(Math.abs(c.expected), 1e-300);
+    assert.ok(Math.abs(values[i] - c.expected) <= tolerance,
+      `${c.name}(${c.args}): ${values[i]} != ${c.expected}`);
+  });
+});
+
+test('Bessel principal branches retain complex coordinates and integer parity', async () => {
+  const src = SF + `
+J = sf.bessel_j.(0.5, [-2.0, 2.0])
+I = sf.bessel_i(v = 0.5, z = -2.0)
+projections = [real(J[1]), imag(J[1]), real(J[2]), imag(J[2]),
+  real(I), imag(I), abs(J[1]), abs2(J[1]), real(sf.bessel_j(1, -2))]
+`;
+  const actual = await value(src, 'projections');
+  const j = Math.sqrt(1 / Math.PI) * Math.sin(2), i = Math.sqrt(1 / Math.PI) * Math.sinh(2);
+  const expected = [0, j, j, 0, 0, i, j, j * j, -0.5767248077568736];
+  expected.forEach((want, k) => close(actual[k], want, 2e-14, `projection ${k}`));
+});
+
+test('Bessel live arguments retain their real and imaginary parts at every atom', async () => {
+  const { ctx } = makeMatCtx(SF + `
+x ~ Normal(0, 1)
+j = sf.bessel_j(0.5, x)
+r = real(j)
+i = imag(j)
+`, { sampleCount: 32, rootSeed: 117 });
+  const x = (await ctx.getMeasure('x')).samples;
+  const r = (await ctx.getMeasure('r')).samples, im = (await ctx.getMeasure('i')).samples;
+  for (let k = 0; k < x.length; k++) {
+    const a = Math.abs(x[k]), half = Math.sqrt(2 / Math.PI / a) * Math.sin(a);
+    close(r[k], x[k] < 0 ? 0 : half, 2e-14, `real ${k}`);
+    close(im[k], x[k] < 0 ? half : 0, 2e-14, `imag ${k}`);
+  }
+  const zero = await value(SF + `a = [real(sf.bessel_j(0,0)), real(sf.bessel_j(1,0)),
+    sf.bessel_y(-0.5,0), real(sf.bessel_i(0,0)), real(sf.bessel_i(1,0))]`, 'a');
+  assert.deepEqual(Array.from(zero), [1, 0, 0, 1, 0]);
+});
+
+test('Bessel zero-argument limits and floating-point tails preserve their mathematical sign', async () => {
+  const values = await value(SF + `a = [real(sf.bessel_j(-0.5,0)), real(sf.bessel_j(-1.5,0)),
+    real(sf.bessel_i(-0.5,0)), real(sf.bessel_i(-1.5,0)), sf.bessel_y(0,0), sf.bessel_k(0,0),
+    real(sf.bessel_i(0,1000)), sf.bessel_k(0,1000), real(sf.bessel_j(50,1e-10))]`, 'a');
+  assert.deepEqual(values, [Infinity, -Infinity, Infinity, -Infinity, -Infinity, Infinity, Infinity, 0, 0]);
+});
+
+test('regularized functions and Gamma transports retain their support endpoint limits', async () => {
+  const actual = await value(SF + `a = [sf.gammainc(2,0), sf.betainc(2,3,0), sf.betainc(2,3,1),
+    sf.bessel_k(50,1e-10), real(sf.bessel_i(-3,0)),
+    builtin_fromuniform(Gamma,record(shape=2.0,rate=1.0),0.0),
+    builtin_fromuniform(Gamma,record(shape=2.0,rate=1.0),1.0),
+    builtin_fromuniform(InverseGamma,record(shape=2.0,scale=1.0),0.0),
+    builtin_fromuniform(InverseGamma,record(shape=2.0,scale=1.0),1.0),
+    builtin_fromuniform(Gamma,record(shape=0.001,rate=1.0),0.1)]`, 'a');
+  // K50(1e-10) exceeds the finite binary64 range. The tiny-shape lower
+  // Gamma quantile is below its subnormal range; these are proper limits.
+  assert.deepEqual(actual, [0, 0, 1, Infinity, 0, 0, Infinity, 0, Infinity, 0]);
+});
+
+test('Bessel backward recurrence retains absolute precision at oscillatory zeros', async () => {
+  // SciPy jv at the exact binary64 arguments below. Relative error is
+  // ill-conditioned at these zeros; the oscillatory amplitude is O(.1).
+  const actual = await value(SF + `a = [real(sf.bessel_j(10,14.475500686554541)),
+    real(sf.bessel_j(20,25.41714081407252)), real(sf.bessel_j(50,57.116899160119175)),
+    real(sf.bessel_j(100,108.83616589840977))]`, 'a');
+  const expected = [-5.4158894522974994e-17, 2.345359210039478e-16,
+    -3.528998603162656e-16, -7.881769861961769e-16];
+  expected.forEach((want, i) => assert.ok(Math.abs(actual[i] - want) < 1e-15, `zero ${i}: ${actual[i]}`));
+});
+
+test('incomplete gamma and beta preserve small upper tails through truncated probability laws', async () => {
+  const { ctx } = makeMatCtx(`
+a0 = totalmass(truncate(Gamma(0.000001,1.0),interval(0.1,inf)))
+a1 = totalmass(truncate(Gamma(0.2,1.0),interval(0.3,inf)))
+a2 = totalmass(truncate(Gamma(10000.0,1.0),interval(10300.0,inf)))
+a3 = totalmass(truncate(Beta(20.0,30.0),interval(0.9,1)))
+a4 = totalmass(truncate(Beta(2.0,3.0),interval(0.9999,1)))`, { sampleCount: 1 });
+  const expected = [1.8229230253500977e-6, 0.18347320566634728,
+    0.0014704948963856815, 2.7314997305471282e-18, 3.999699999998678e-12];
+  for (let i = 0; i < expected.length; i++) {
+    close((await ctx.getMeasure(`a${i}`)).samples[0], expected[i], 2e-12, `upper tail ${i}`);
+  }
+});
+
+test('uniform Gamma expansion retains a representable far upper tail', async () => {
+  // Independent scipy.special.gammaincc(1e7,1.01e7). This is far enough
+  // from the mean to use the outer Temme coefficients, with Q still finite.
+  const { ctx } = makeMatCtx(`q = totalmass(truncate(Gamma(10000000.0,1.0),interval(10100000.0,inf)))`,
+    { sampleCount: 1 });
+  close((await ctx.getMeasure('q')).samples[0], 2.455322949189099e-218, 2e-12, 'far upper tail');
 });

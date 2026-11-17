@@ -618,10 +618,24 @@ const randBetaFixed = {
   },
 };
 
+/** Gamma-family plot and primitive transports use the same P/Q and inverse
+ * seam as truncated sampling. The library Gamma Ctor retains its other stats. */
+function _gammaTransport(dist: any, name: string, params: any): any {
+  Object.defineProperties(dist, {
+    cdf: { value: (x: number) => require('./forward-cdf.ts').cdf(name, x, params) },
+    quantile: { value: (p: number) => require('./inverse-cdf.ts').QUANTILE[name](p, params) },
+  });
+  return dist;
+}
+function GammaCtor(shape: number, rate: number): any {
+  return _gammaTransport(new Gamma(shape, rate), 'Gamma', { shape, rate });
+}
+
 function InverseGammaCtor(this: any, shape: any, scale: any) {
   this.shape = +shape;
   this.scale = +scale;
   this.support = [0, Infinity];
+  _gammaTransport(this, 'InverseGamma', { shape: this.shape, scale: this.scale });
 }
 InverseGammaCtor.prototype.pdf = function(this: any, x: any) {
   if (x <= 0) return 0;
@@ -666,6 +680,7 @@ function ChiSquaredCtor(this: any, k: any) {
   this.variance = 2 * (+k);
   this.stdev = Math.sqrt(this.variance);
   this.support = [0, Infinity];
+  _gammaTransport(this, 'ChiSquared', { k: this.k });
 }
 ChiSquaredCtor.prototype.pdf = function(this: any, x: any) {
   return Math.exp(this.logpdf(x));
@@ -1712,7 +1727,7 @@ const REGISTRY = {
     params:   ['shape', 'rate'],
     aliases:  {},
     discrete: false,
-    Ctor:     Gamma,
+    Ctor:     GammaCtor,
     randFn:   randGamma,
     logpdfFn: logpdfGamma,
   },
