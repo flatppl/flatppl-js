@@ -71,10 +71,12 @@ test('lu: 3x3 — round-trip P·A = L·U holds for arbitrary matrix', () => {
   assert.equal(U[3], 0); assert.equal(U[6], 0); assert.equal(U[7], 0);
 });
 
-test('lu: singular matrix throws', () => {
-  // A = [[1, 2], [2, 4]] is rank-1.
-  const A = matVal(2, 2, [1, 2, 2, 4]);
-  assert.throws(() => extLinalg._lu(A), /singular/);
+test('lu: singular matrices retain complete factors after an early zero column', () => {
+  const data = [0, 1, 2, 0, 2, 4, 0, 3, 7];
+  const { P, L, U } = extLinalg._lu(matVal(3, 3, data));
+  assertClose(flatMatMul(Array.from(P.data), data, 3, 3, 3),
+    flatMatMul(Array.from(L.data), Array.from(U.data), 3, 3, 3));
+  assertClose(Array.from(L.data), [1, 0, 0, 0, 1, 0, 0, 2 / 3, 1]);
 });
 
 test('lu: rejects non-square', () => {

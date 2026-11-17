@@ -94,7 +94,9 @@ export function _luDecompValue(data: any, n: number) {
       const v = Math.abs(LU[r * n + k]);
       if (v > maxAbs) { maxAbs = v; maxRow = r; }
     }
-    if (maxAbs === 0) return { LU, piv, sign: 0 };
+    // A zero remaining column makes the determinant zero, but later columns
+    // still need factoring for the standard module's singular P*A=L*U form.
+    if (maxAbs === 0) { sign = 0; continue; }
     if (maxRow !== k) {
       // swap rows k and maxRow in LU
       for (let c = 0; c < n; c++) {

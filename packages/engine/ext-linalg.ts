@@ -42,10 +42,10 @@ function _vecValue(data: Float64Array, n: number): any {
 
 function _lu(A: any): any {
   A = valueLib._logicalDense(A);
+  if (A.im) return require('./complex-lu.ts').lu(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('lu: A must be a square matrix');
-  const { LU, piv, sign } = sLinalg._luDecompValue(A.data, n);
-  if (sign === 0) throw new Error('lu: matrix is singular');
+  const { LU, piv } = sLinalg._luDecompValue(A.data, n);
   // Unpack: L (unit-diagonal, below), U (on and above diagonal), P (from piv).
   const L = new Float64Array(n * n);
   const U = new Float64Array(n * n);

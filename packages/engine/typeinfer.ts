@@ -5716,7 +5716,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(T.failed('not callable'), expr);
     }
 
-    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg);
+    const result = checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg);
+    if (member?.realResult && result.kind !== 'failed') {
+      // Matrix decompositions preserve real outputs for real inputs, including
+      // integer matrices whose elimination produces fractions. A conservative
+      // complex signature validates both domains; this refinement keeps real
+      // consumers such as linsolve usable without weakening complex checks.
+      const realNumeric = (t: any): boolean => t?.kind === 'scalar'
+        ? ['boolean', 'integer', 'real'].includes(t.prim)
+        : t?.kind === 'array' ? realNumeric(t.elem)
+          : t?.kind === 'record' ? Object.values(t.fields).every(realNumeric)
+            : t?.kind === 'tuple' ? t.elems.every(realNumeric) : false;
+      const actuals = [...(expr.args || []), ...Object.values(expr.kwargs || {})];
+      if (actuals.length && actuals.every((a: any) => realNumeric(a?.__splatType || inferExpr(a, scopes)))) {
+        return write(member.realResult, expr);
+      }
+    }
+    return result;
   }
 
   const reinferring = new Set<any>();
