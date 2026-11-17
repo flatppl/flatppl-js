@@ -70,3 +70,18 @@ y=linsolve(F[1].L,[1.0,2.0,3.0])
   close((await ctx.getMeasure('x')).samples, [1, 2, 5 / 3]);
   close((await ctx.getMeasure('y')).samples, [1, 2, 5 / 3]);
 });
+
+test('complex singular LU continues past a zero column and retains later pivots', async () => {
+  const { ctx } = makeMatCtx(HEAD + `
+A=rowstack([[complex(0,0),complex(1,1),complex(2,0)],
+  [complex(0,0),complex(2,0),complex(4,0)],
+  [complex(0,0),complex(3,0),complex(0,7)]])
+f=e.lu(A)
+P=f.P
+L=f.L
+U=f.U`, { sampleCount: 1 });
+  close((await ctx.getMeasure('P')).samples, [1, 0, 0, 0, 0, 1, 0, 1, 0]);
+  close((await ctx.getMeasure('L')).samples, [1, 0, 0, 0, 1, 0, 0, 2 / 3, 1]);
+  close((await ctx.getMeasure('U')).samples, [0, 1, 2, 0, 3, 0, 0, 0, 4]);
+  close((await ctx.getMeasure('U')).imag, [0, 1, 0, 0, 0, 7, 0, 0, -14 / 3]);
+});
