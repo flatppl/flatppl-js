@@ -843,7 +843,10 @@ function liftInlineSubexpressions(bindings: any) {
         const a = astNode.args[i];
         if (a && a.type === 'KeywordArg') {
           if (op === 'joint')             a.value = liftJointComponent(a.value);
-          else if (isRecordLike)           a.value = liftMeasure(a.value);
+          // §03 record arrays keep their value shape after lifting, just
+          // as a named array expression does before this pass.
+          else if (isRecordLike)           a.value = liftMeasure(a.value,
+            op === 'record' && __knownAstType(a.value)?.kind === 'array');
           else if (opUsesValueKwargs(op)) a.value = liftValue(a.value);
           // `broadcast(f, name=[lits or refs], …)` (kwarg form of the
           // surface broadcast surfaces, including dot-notation
@@ -4893,7 +4896,10 @@ function isEvaluable(ir: IRNode | null | undefined, bindings?: any): boolean {
         }
       }
       if (Array.isArray(ir.fields)) {
-        for (const f of ir.fields) if (!isEvaluable(f && f.value, bindings)) return false;
+        for (const f of ir.fields) {
+          if (!isEvaluable(f && f.value, bindings)
+              && !(ir.op === 'table' && _isEvaluableArrayArg(f && f.value, bindings))) return false;
+        }
       }
       return true;
     default:

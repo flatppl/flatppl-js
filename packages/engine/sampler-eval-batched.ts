@@ -900,6 +900,24 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
         if (args.some((a: any) => Array.isArray(a) && a.length === N && isValueObj(a[0]))) {
           return _perAtomFallback(ir, refArrays, N, baseEnv, overlay);
         }
+        // §07 scalar multiplication acts on one intrinsic value per atom.
+        // A shared vector can also have length N, so its shape alone cannot
+        // distinguish it from the sampled scalar column.
+        if (op === 'mul') {
+          const a = args[0], b = args[1];
+          const aRank = valueLib.isValue(a) ? a.shape.length : ArrayBuffer.isView(a) || Array.isArray(a) ? 1 : 0;
+          const bRank = valueLib.isValue(b) ? b.shape.length : ArrayBuffer.isView(b) || Array.isArray(b) ? 1 : 0;
+          if (aRank > 0 && bRank > 0) {
+            const aScalar = valueLib.isAtomBatchedScalar(a, N), bScalar = valueLib.isAtomBatchedScalar(b, N);
+            if (aScalar || bScalar) {
+              const aBatch = aScalar && _touchesAtomRef(ir.args[0], refArrays, overlay);
+              const bBatch = bScalar && _touchesAtomRef(ir.args[1], refArrays, overlay);
+              if ((aBatch && !bBatch) || (bBatch && !aBatch)) {
+                return _perAtomFallback(ir, refArrays, N, baseEnv, overlay);
+              }
+            }
+          }
+        }
         // A shared [m,k] matrix can have m===N. Only reference provenance
         // distinguishes it from a [N,k] batch of vectors; keep the existing
         // real/complex matvec kernels, including their orientation checks.
@@ -1245,9 +1263,9 @@ function _touchesAtomRef(ir: any, refArrays: any, overlay: any): boolean {
 //
 // Planar complex cells have the same logical cell shape as real cells; the
 // packer below carries their imaginary plane and promotes real cells to zero.
-function _cellShapeOf(s: any) {
+function _cellShapeOf(s: any): number[] | null {
   if (Array.isArray(s) || (s && s.BYTES_PER_ELEMENT !== undefined)) return [s.length];
-  if (valueLib.isValue(s) && s.shape.length >= 1) return s.shape;
+  if (valueLib.isValue(s)) return s.shape;
   return null;
 }
 
@@ -1266,17 +1284,34 @@ function _packTransposedCells(out: any[], N: any): any {
   return _packUniformCells(logical, N);
 }
 
-// Pack N per-atom results that all carry the SAME numeric cell shape into
-// one atom-major Value shape=[N, ...cell]; return null when they do not, so
-// the caller can surface the raw per-atom array instead.
-//
-// The cell keeps its own rank: a rank-1 result packs to [N, k] and a rank-2
-// one to [N, r, c] — the shape the vector-atom callers already read
-// (worker.ts `evaluateN` splits `shape.slice(1)` off as `dims`).
+/** Pack one array-valued cell without losing its nested array levels (§03). */
+function _packArrayCell(cell: any[]): any {
+  if (cell.length === 0) return { shape: [0], data: new Float64Array(0) };
+  const cells = cell.map(value => Array.isArray(value) ? _packArrayCell(value) || value
+    : typeof value === 'number' || typeof value === 'boolean' || _isComplex(value)
+      ? valueLib.asValue(value) : value);
+  return _packUniformCells(cells, cells.length);
+}
+
+/** Normalize structured numeric cells only after the dense packer declines. */
+function _packNormalizedCells(out: any[], N: number): any {
+  let changed = false;
+  const cells = out.map(cell => {
+    const packed = Array.isArray(cell) ? _packArrayCell(cell) || cell
+      : valueLib.isDiagStored(cell) ? valueLib._logicalDense(cell)
+        : _isComplex(cell) ? valueLib.asValue(cell) : cell;
+    if (packed !== cell) changed = true;
+    return packed;
+  });
+  return changed ? _packUniformCells(cells, N) : null;
+}
+
+// Pack N per-atom results with the same numeric cell shape into one Value
+// shape=[N, ...cell]. Keep the cell rank and decline unrepresentable atoms.
 function _packUniformCells(out: any[], N: any): any {
   const cell0 = _cellShapeOf(out[0]);
-  if (cell0 === null) return null;
-  const cellLen = cell0.reduce((a: any, b: any) => a * b, 1);
+  if (cell0 === null) return _isComplex(out[0]) ? _packNormalizedCells(out, N) : null;
+  const cellLen = cell0.reduce((a: number, b: number) => a * b, 1);
   for (let i = 0; i < N; i++) {
     const s = out[i];
     // A transposed matrix cell stores its entries unswapped, so packing `data`
@@ -1285,14 +1320,15 @@ function _packUniformCells(out: any[], N: any): any {
       return _packTransposedCells(out, N);
     }
     const cell = _cellShapeOf(s);
-    if (cell === null || cell.length !== cell0.length) return null;
+    if (cell === null) return _isComplex(s) ? _packNormalizedCells(out, N) : null;
+    if (cell.length !== cell0.length) return null;
     for (let d = 0; d < cell0.length; d++) {
       if (cell[d] !== cell0[d]) return null;
     }
     const src = valueLib.isValue(s) ? s.data : s;
     for (let j = 0; j < cellLen; j++) {
       const e = src[j];
-      if (typeof e !== 'number' && typeof e !== 'boolean') return null;
+      if (typeof e !== 'number' && typeof e !== 'boolean') return _packNormalizedCells(out, N);
     }
   }
   const data = new Float64Array(N * cellLen);

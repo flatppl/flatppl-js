@@ -332,7 +332,15 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
   };
   // §03: an array of array-valued cells is not a matrix. Keep the loop/cell
   // split when this packed result becomes another broadcast's input (§04).
-  if (packed.innerShape.length) valueLib.setLevels(stacked, [bshape.length]);
+  if (packed.innerShape.length) {
+    const levels = valueLib.levelAxesOf(cells[0]);
+    if (!cells.every(cell => {
+      if (typeof cell.outerRank !== 'number') return levels.length === 0;
+      const other = valueLib.levelAxesOf(cell);
+      return other.length === levels.length && other.every((rank: number, i: number) => rank === levels[i]);
+    })) return null;
+    valueLib.setLevels(stacked, [bshape.length, ...levels]);
+  }
   if (packed.im !== undefined) {
     stacked.im = packed.im;
     stacked.dtype = 'complex';

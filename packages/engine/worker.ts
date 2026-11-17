@@ -273,10 +273,9 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           + result.shape.join(',') + '] for count=' + count);
       }
     } else if (Array.isArray(result) && result.length === count
-        && result.every((v: any) => v && typeof v === 'object' && !Array.isArray(v)
-          && !ArrayBuffer.isView(v) && !valueLib.isValue(v) && !v.__table__)) {
-      // Record-valued numerical functions retain whole atoms. The existing
-      // measureFromAtoms consumer packs their fields, including matrix planes.
+        && result.every((v: any) => v && typeof v === 'object' && !ArrayBuffer.isView(v))) {
+      // §03 structured values retain whole atoms when numeric packing cannot
+      // express their shape, including tables and oriented vector cells.
       return { type: 'samples', samples: result, logWeights: null };
     } else {
       throw new Error('evaluateN: expression produced non-scalar per-atom '

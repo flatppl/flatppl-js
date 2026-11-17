@@ -240,6 +240,9 @@ function matLebesgueBox(name: string, d: any, ctx: any) {
 
 function matAlias(name: string, d: DerivationAlias, ctx: any) {
   const binding = ctx.bindings && ctx.bindings.get(name);
+  if (binding && binding.type === 'lawof') {
+    return ctx.getMeasure(d.from).then(shared.materialiseFixedAtoms);
+  }
   // Renaming and reifying a value preserve its trace. A draw instead owns a
   // new coordinate (§04): copy the measure and any reified ancestors, while
   // retaining external constructor parameters in the parent atom.
@@ -4521,14 +4524,8 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         refArrays: refArrays,
         seed: nameSeed('%materialise_ir:pushfwd', ctx.rootKey),
       })
-    ).then((reply: any) => {
-      const data = reply.samples;
-      return {
-        samples: data,
-        value: { shape: [data.length], data: data },
-        logWeights: reply.logWeights || null,
-      };
-    });
+    ).then((reply: any) => measureFromReply(reply, ctx.sampleCount,
+      { logWeights: reply.logWeights || null }));
   }
   // Leaf distribution (or any unrecognised call op — the worker's
   // sampleN throws if the op isn't in the sampler REGISTRY, surfacing a

@@ -121,6 +121,9 @@ function measureToRefValue(m: any, name: string, label: string) {
   if (m == null) {
     throw new Error(label + ': measure for "' + name + '" is null/undefined');
   }
+  const fixed = m[FIXED_ATOM];
+  if (fixed && fixed.value && fixed.value.__table__) return new Array(fixed.count).fill(fixed.value);
+  if (fixed) return measureToRefValue(materialiseFixedAtoms(m), name, label);
   if (m.value) return m.value;
   if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined) {
     return valueLib.batchedScalar(m.samples);
@@ -207,16 +210,23 @@ function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
     throw new Error(label + ': record measure for "' + name
       + '" has no .fields to expand into per-atom objects');
   }
+  const fixed = m[FIXED_ATOM];
+  if (fixed) return new Array(fixed.count).fill(fixed.value);
   const fnames = Object.keys(m.fields);
   // N (atom count) is taken from the first field that exposes a length — a
   // scalar leaf (.samples), a vector field (.value), OR a nested-record field
   // (its per-atom length). A record-of-records (every top-level field a
   // record) exposes a length only through the nested-record arm; scanning for
   // .samples/.value alone left N=0 and returned an empty per-atom array.
-  let N = 0;
+  let N = 0, fixedCount = 0;
   // Per-field per-atom accessor, precomputed so the N-loop stays tight.
   const access = fnames.map((f) => {
     const fm = m.fields[f];
+    const fixed = fm && fm[FIXED_ATOM];
+    if (fixed) {
+      fixedCount = fixed.count;
+      return () => fixed.value;
+    }
     if (fm && !fm.value && fm.samples && fm.samples.BYTES_PER_ELEMENT !== undefined) {
       const s = fm.samples;
       if (N === 0 && typeof s.length === 'number') N = s.length;
@@ -232,9 +242,14 @@ function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
       if (N === 0) N = v.shape[0];
       return (i: number) => valueLib._sliceRow(v, i);
     }
+    if (fm && Array.isArray(fm.value)) {
+      if (N === 0) N = fm.value.length;
+      return (i: number) => fm.value[i];
+    }
     throw new Error(label + ': record field "' + name + '.' + f
       + '" is neither scalar (.samples), record (.fields), nor vector (.value)');
   });
+  if (N === 0) N = fixedCount;
   const out = new Array(N);
   for (let i = 0; i < N; i++) {
     const o: Record<string, any> = {};
@@ -285,7 +300,9 @@ function _tileAtomMajor(src: any, N: number, k: number, blockLen: number): any {
  */
 function tileMeasureAtomMajor(m: any, N: number, k: number): any {
   if (!m || k <= 1) return m;
+  const fixed = m[FIXED_ATOM];
   const out = Object.assign({}, m);
+  if (fixed) out[FIXED_ATOM] = { value: fixed.value, count: N * k };
   if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined
       && m.samples.length === N) {
     out.samples = _tileAtomMajor(m.samples, N, k, 1);
@@ -1010,6 +1027,23 @@ function pushModuleRegistry(ctx: any) {
   });
 }
 
+const FIXED_ATOM = Symbol('fixedAtom');
+
+/** Turn fixed display storage into a law's whole atoms before measure algebra. */
+function materialiseFixedAtoms(m: any): any {
+  const fixed = m && m[FIXED_ATOM];
+  if (!fixed) return m;
+  // Fixed table measures already retain one whole table and its columns.
+  if (fixed.value && fixed.value.__table__) return m;
+  const extras = { logWeights: m.logWeights, logTotalmass: m.logTotalmass, n_eff: m.n_eff };
+  if (m.rank0 && m.samples.length === fixed.count) {
+    const value = m.imag ? valueLib.complexValue(m.samples, m.imag, [fixed.count])
+      : valueLib.batchedScalar(m.samples);
+    return measureFromValue(value, extras);
+  }
+  return measureFromAtoms(new Array(fixed.count).fill(fixed.value), extras);
+}
+
 /**
  * Convert a JS value (from the orchestrator's fixedValues map) to a
  * Measure record. Scalars broadcast across N atoms; numeric arrays
@@ -1018,6 +1052,17 @@ function pushModuleRegistry(ctx: any) {
  * objects); the caller falls through to derivation-based dispatch.
  */
 function fixedValueToMeasure(v: any, sampleCount: any): any {
+  const measure = fixedValueToMeasureImpl(v, sampleCount);
+  // §03 fixed record fields keep their whole value across atoms. The
+  // display adapter's flattened samples cannot encode that distinction.
+  if (measure) {
+    measure[FIXED_ATOM] = { value: v, count: sampleCount };
+    measure.n_eff = sampleCount;
+  }
+  return measure;
+}
+
+function fixedValueToMeasureImpl(v: any, sampleCount: any): any {
   // A rank-0 Value is a scalar (spec §03 has no rank-0 array): a row-vector
   // times column-vector product, or `trace`, returns one. Read it as one, so
   // it is not surfaced as a one-element vector.
@@ -1155,6 +1200,7 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
  */
 function measureN(m: any): number {
   if (!m) return 0;
+  if (m[FIXED_ATOM]) return m[FIXED_ATOM].count;
   if (m.samples) {
     // Atom count = leading (atom) axis, NOT the flattened sample buffer:
     // a vector-atom leaf stores N*prod(dims) scalars with the per-atom
@@ -1270,7 +1316,11 @@ function measureFromReply(reply: any, count: any, extras: any) {
  */
 function measureFromAtoms(atoms: any[], extras: any = {}) {
   const cells = atoms.map(v => {
-    if (valueLib.isValue(v)) return valueLib._logicalDense(v);
+    if (valueLib.isValue(v)) {
+      // A transposed vector is an oriented cell, not a matrix view that
+      // can be replaced by a dense column vector (§03/§07).
+      return v.shape.length === 1 && valueLib.isTransposeView(v) ? v : valueLib._logicalDense(v);
+    }
     if (v && typeof v.re === 'number' && typeof v.im === 'number'
         && Object.keys(v).length === 2) return valueLib.asValue(v);
     return v;
@@ -1635,6 +1685,7 @@ module.exports = {
   pushFixedEnv,
   pushModuleRegistry,
   fixedValueToMeasure,
+  materialiseFixedAtoms,
   measureN,
   valueOf,
   scalarMeasureN,

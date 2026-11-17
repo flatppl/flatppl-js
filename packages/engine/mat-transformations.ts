@@ -30,7 +30,6 @@ const {
   measureFromValue,
   setBoundsForMat,
   resolveFnBody,
-  measureToPerAtomRecords,
   inlineBoundaryDerivations,
   measureN,
 } = shared;
@@ -283,7 +282,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
       // is the field's own value; an ARRAY selector is subset selection and
       // stays record-shaped, one field included.
       if (projSel.bare) {
-        return Object.assign({}, projBase.fields[projSel.names[0]], carried);
+        return shared.materialiseFixedAtoms(Object.assign({}, projBase.fields[projSel.names[0]], carried));
       }
       const projFields: any = {};
       for (const nm of projSel.names) projFields[nm] = projBase.fields[nm];
@@ -326,16 +325,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
       && baseVal.shape.length >= 2 && baseVal.shape[0] === N;
     if (require('./types.ts').acceptsPositional(fnInfo, 1)) {
       const p0 = fnInfo.params[0];
-      if (vectorAtom) {
-        paramBind[p0] = baseVal;
-      } else if (M.samples) {
-        paramBind[p0] = M.samples;
-      } else if (M.fields) {
-        paramBind[p0] = measureToPerAtomRecords(M, p0, 'pushfwd');
-      } else {
-        return Promise.reject(new Error(`pushfwd: base measure '${d.from}' has `
-          + `neither scalar samples nor record fields`));
-      }
+      paramBind[p0] = shared.measureToRefValue(M, p0, 'pushfwd');
     } else {
       if (!M.fields) {
         return Promise.reject(new Error(`pushfwd: function '${d.fnRef}' takes `
@@ -344,12 +334,12 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
       }
       for (const [i, p] of fnInfo.params.entries()) {
         const fm = M.fields[fnInfo.paramKwargs?.[i] || p];
-        if (!fm || !fm.samples) {
+        if (!fm) {
           return Promise.reject(new Error(`pushfwd: function input '${p}' has `
             + `no matching field in the record variate of '${d.from}' `
             + `(fields: ${Object.keys(M.fields).join(', ')})`));
         }
-        paramBind[p] = fm.samples;
+        paramBind[p] = shared.measureToRefValue(fm, p, 'pushfwd');
       }
     }
     // The body may also reference values BEYOND f's parameters — e.g.
