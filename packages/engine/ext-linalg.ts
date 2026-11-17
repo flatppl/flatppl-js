@@ -5,9 +5,9 @@
 // `ext-linear-algebra` standard module (spec §09).
 // =====================================================================
 //
-// Pure-algorithm leaf module — operates on row-major Float64Array data
-// (the §2.1 shape contract). value.ts resolves storage views at each
-// boundary; sampler-linalg supplies the existing LU primitive.
+// Numeric algorithms over row-major real and planar-complex Values (the
+// §2.1 shape contract). value.ts resolves storage views at each boundary;
+// the complex LU and general spectral paths have their own numeric leaves.
 //
 // Each function takes either flat data + shape or a Value, and returns
 // a fresh Value (or record-of-Values for multi-output decompositions).
@@ -80,6 +80,7 @@ function _lu(A: any): any {
 function _kron(A: any, B: any): any {
   A = valueLib._logicalDense(A);
   B = valueLib._logicalDense(B);
+  if (A.im || B.im) return _complexKron(A, B);
   const m = A.shape[0], n = A.shape[1];
   const p = B.shape[0], q = B.shape[1];
   const outRows = m * p, outCols = n * q;
@@ -96,6 +97,23 @@ function _kron(A: any, B: any): any {
     }
   }
   return _matValue(out, outRows, outCols);
+}
+
+/** §09 complex Kronecker blocks use the same matrix layout as the real path.
+ * Zero real parts do not imply zero blocks when the coefficient is imaginary. */
+function _complexKron(A: any, B: any): any {
+  const [m, n] = A.shape, [p, q] = B.shape, cols = n * q;
+  const re = new Float64Array(m * p * cols), im = new Float64Array(re.length);
+  for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+    const ar = A.data[i * n + j], ai = A.im?.[i * n + j] || 0;
+    if (ar === 0 && ai === 0) continue;
+    for (let r = 0; r < p; r++) for (let c = 0; c < q; c++) {
+      const br = B.data[r * q + c], bi = B.im?.[r * q + c] || 0;
+      const index = (i * p + r) * cols + j * q + c;
+      re[index] = ar * br - ai * bi; im[index] = ar * bi + ai * br;
+    }
+  }
+  return valueLib.complexValue(re, im, [m * p, cols]);
 }
 
 // =====================================================================
@@ -164,6 +182,24 @@ function _matexp(A: any): any {
   A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('matexp: A must be a square matrix');
+  if (A.im) {
+    // Realification preserves multiplication and hence the exponential:
+    // R(A)=[Re A,-Im A; Im A,Re A], exp(R(A))=R(exp(A)). Reuse the
+    // real Padé solve and scaling decisions at this numerical boundary.
+    const size = 2 * n, block = new Float64Array(size * size);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const k = i * n + j, top = i * size + j, bottom = (i + n) * size + j;
+      block[top] = block[bottom + n] = A.data[k];
+      block[top + n] = -A.im[k]; block[bottom] = A.im[k];
+    }
+    const exponential = _matexp(_matValue(block, size, size));
+    const re = new Float64Array(n * n), im = new Float64Array(n * n);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      re[i * n + j] = exponential.data[i * size + j];
+      im[i * n + j] = exponential.data[(i + n) * size + j];
+    }
+    return valueLib.complexValue(re, im, [n, n]);
+  }
   // Scaling: pick s = max(0, ceil(log2(||A||_1 / θ_13))).
   const THETA_13 = 5.371920351148152;
   let maximum = 0;
@@ -338,32 +374,41 @@ function _qr(A: any): any {
 // shape (m,), as numpy.linalg.lstsq returns it: x = V · S⁺ · Uᵀ · b from the
 // thin SVD, where S⁺ inverts only the singular values above
 //   tol = max(m, k) · σ_max · ε_machine
-// (numpy's default rcond, and the tolerance `rank` uses). A rank-deficient
-// A, exactly or numerically, then gives the minimum-norm solution rather
-// than dividing by a rounding-level pivot. A wide A (m < k) takes the SVD of
-// Aᵀ = U·S·Vᵀ, so A = V·S·Uᵀ and x = U · S⁺ · Vᵀ · b.
+// (numpy's default rcond, and the tolerance `rank` uses). Rank-deficient A
+// gives the minimum-norm solution rather than dividing by a rounding-level
+// pivot. The SVD boundary handles wide A by decomposing its adjoint and
+// swapping U/V. Complex projection uses Uᴴ rather than a plain transpose.
 
 function _lstsq(A: any, b: any): any {
   A = valueLib._logicalDense(A);
-  b = valueLib._logicalDense(b);
+  b = valueLib._logicalDense(valueLib.asValue(b));
   const m = A.shape[0], k = A.shape[1];
   if (b.shape.length !== 1 || b.shape[0] !== m) {
     throw new Error('lstsq: b must be a length-m vector (got shape '
       + JSON.stringify(b.shape) + '; A is ' + m + 'x' + k + ')');
   }
-  const tall = m >= k;
-  let work = A;
-  if (!tall) {
-    const data = new Float64Array(k * m);
-    for (let i = 0; i < m; i++) for (let j = 0; j < k; j++) data[j * m + i] = A.data[i * k + j];
-    work = { shape: [k, m], data };
-  }
-  const { U, S, V } = _svd(work);
-  // In the tall case A = U·S·Vᵀ (U m×r, V k×r); in the wide case A = V·S·Uᵀ.
-  const left = tall ? U : V, right = tall ? V : U;
+  const { U: left, S, V: right } = _svd(A);
   const r = S.data.length, nl = left.shape[1], nr = right.shape[1];
   const tol = Math.max(m, k) * (r > 0 ? S.data[0] : 0) * 2.220446049250313e-16;
   const x = new Float64Array(k);
+  if (A.im || b.im) {
+    const im = new Float64Array(k);
+    for (let j = 0; j < r; j++) {
+      const s = S.data[j]; if (!(s > tol)) continue;
+      let cr = 0, ci = 0;
+      for (let i = 0; i < m; i++) {
+        const ur = left.data[i * nl + j], ui = left.im?.[i * nl + j] || 0;
+        const br = b.data[i], bi = b.im?.[i] || 0;
+        cr += ur * br + ui * bi; ci += ur * bi - ui * br;
+      }
+      cr /= s; ci /= s;
+      for (let i = 0; i < k; i++) {
+        const vr = right.data[i * nr + j], vi = right.im?.[i * nr + j] || 0;
+        x[i] += vr * cr - vi * ci; im[i] += vr * ci + vi * cr;
+      }
+    }
+    return valueLib.complexValue(x, im, [k]);
+  }
   for (let j = 0; j < r; j++) {
     const s = S.data[j];
     if (!(s > tol)) continue;
@@ -396,11 +441,8 @@ function _lstsq(A: any, b: any): any {
 // than tridiagonal-QR for large n. Defer Householder-tridiag+QR until
 // a profile shows the n > 50 case.
 //
-// **NON-SYMMETRIC matrices are NOT supported.** The spec's `eigen`
-// op allows complex eigenvalues, which would require a complex-output
-// path the engine doesn't yet have for matrix returns. Throw with a
-// clear diagnostic; the symmetric case covers Bayesian covariance /
-// precision-matrix workflows, which is the common case.
+// The symmetric-real path remains the fast covariance-matrix case. General
+// real and complex matrices use unitary Schur iteration in general-eigen.ts.
 
 const _JACOBI_MAX_SWEEPS = 50;
 const _JACOBI_TOL_REL    = 1e-12;
@@ -525,14 +567,53 @@ function _jacobiSymmetric(A: any, computeVectors = true): {
 }
 
 function _eigen(A: any): any {
+  A = valueLib._logicalDense(A);
+  if (A.im || A.shape[0] !== A.shape[1] || !_isSymmetric(A, A.shape[0], 0)) {
+    return require('./general-eigen.ts').eigen(A);
+  }
   const { values, vectors, n } = _jacobiSymmetric(A);
   return {
-    values:  _vecValue(values, n),
-    vectors: _matValue(vectors!, n, n),
+    values:  valueLib.complexValue(values, new Float64Array(n), [n]),
+    vectors: valueLib.complexValue(vectors!, new Float64Array(n * n), [n, n]),
   };
 }
 
+function _generalEigenExtreme(A: any, maximum: boolean): number {
+  const { values, vectors } = require('./general-eigen.ts').eigen(A);
+  if (values.data.length === 0) throw new Error('eigenvalue extrema require a nonempty spectrum');
+  let scale = 0;
+  for (let i = 0; i < A.data.length; i++) scale = Math.max(scale, Math.abs(A.data[i]), Math.abs(A.im?.[i] || 0));
+  scale ||= 1;
+  const n = values.data.length;
+  let result = maximum ? -Infinity : Infinity;
+  for (let j = 0; j < n; j++) {
+    let residual = 0, norm = 0;
+    for (let i = 0; i < n; i++) {
+      const vr = vectors.data[i * n + j], vi = vectors.im[i * n + j];
+      let rr = -(values.data[j] / scale * vr - values.im[j] / scale * vi);
+      let ri = -(values.data[j] / scale * vi + values.im[j] / scale * vr);
+      for (let k = 0; k < n; k++) {
+        const ar = A.data[i * n + k] / scale, ai = (A.im?.[i * n + k] || 0) / scale;
+        rr += ar * vectors.data[k * n + j] - ai * vectors.im[k * n + j];
+        ri += ar * vectors.im[k * n + j] + ai * vectors.data[k * n + j];
+      }
+      residual = Math.hypot(residual, rr, ri); norm = Math.hypot(norm, vr, vi);
+    }
+    // A large unrelated eigenvalue must not hide a small complex pair.
+    // Classify roundoff per eigenpair using its actual backward residual.
+    const tolerance = 64 * (residual * scale / norm
+      + Number.EPSILON * Math.hypot(values.data[j], values.im[j]));
+    if (Math.abs(values.im[j]) > tolerance) {
+      throw new Error('eigenvalue extrema are undefined for complex eigenvalues (spec §09)');
+    }
+    result = maximum ? Math.max(result, values.data[j]) : Math.min(result, values.data[j]);
+  }
+  return result;
+}
+
 function _eigmax(A: any): number {
+  A = valueLib._logicalDense(A);
+  if (A.im || !_isSymmetric(A, A.shape[0], 0)) return _generalEigenExtreme(A, true);
   const { values } = _jacobiSymmetric(A, false);
   let max = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] > max) max = values[i];
@@ -540,6 +621,8 @@ function _eigmax(A: any): number {
 }
 
 function _eigmin(A: any): number {
+  A = valueLib._logicalDense(A);
+  if (A.im || !_isSymmetric(A, A.shape[0], 0)) return _generalEigenExtreme(A, false);
   const { values } = _jacobiSymmetric(A, false);
   let min = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] < min) min = values[i];
@@ -584,7 +667,12 @@ function _columnNorm(B: Float64Array, m: number, n: number, j: number): number {
 function _svd(A: any): any {
   A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
-  if (m < n) throw new Error('svd: requires m >= n (got ' + m + 'x' + n + '); transpose first');
+  if (m < n) {
+    // Aᴴ=U S Vᴴ implies A=V S Uᴴ, including complex and rank-deficient A.
+    const f = _svd(valueLib.adjoint(A));
+    return { U: f.V, S: f.S, V: f.U };
+  }
+  if (A.im) return require('./complex-svd.ts').svd(A);
   // Work on a fresh copy.
   const B = new Float64Array(m * n);
   for (let i = 0; i < m * n; i++) B[i] = A.data[i];
@@ -714,20 +802,10 @@ function _svd(A: any): any {
 // an integer.
 
 function _rank(A: any): number {
-  // SVD requires m >= n; transpose if needed (singular values are
-  // identical for A and A^T).
-  let work = A;
   const m0 = A.shape[0], n0 = A.shape[1];
-  if (m0 < n0) {
-    const data = new Float64Array(n0 * m0);
-    for (let i = 0; i < m0; i++) {
-      for (let j = 0; j < n0; j++) data[j * m0 + i] = A.data[i * n0 + j];
-    }
-    work = { shape: [n0, m0], data };
-  }
-  const fields = _svd(work);
+  const fields = _svd(A);
   const S = fields.S.data;
-  const sigmaMax = S[0];
+  const sigmaMax = S.length ? S[0] : 0;
   const tol = Math.max(m0, n0) * sigmaMax * 2.220446049250313e-16;
   let r = 0;
   for (let i = 0; i < S.length; i++) if (S[i] > tol) r++;

@@ -59,6 +59,19 @@ real cells embedded into a complex batch. Record-valued numerical calls retain
 whole atoms through the existing record-measure path; record field access uses
 the common Value row slicer so it preserves imaginary planes and layout tags.
 
+General `ext-linear-algebra.eigen` uses complex unitary Schur iteration in
+`general-eigen.ts`, with column-scaled Householder steps in `complex-qr.ts`.
+It retains the real symmetric Jacobi fast path. Eigenpairs have a conservative
+complex codomain; real-spectrum extrema remain real, and matrix decomposition
+descriptors specialize real-preserving results when all inputs are real.
+
+Economy SVD supports tall/wide real and complex matrices, including null-space
+completion. The complex Jacobi path in `complex-svd.ts` scales columns separately
+and certifies unitary factors; `lstsq` and `rank` share the same singular values.
+
+Complex matrix exponentials use the real block representation of a complex
+linear map, sharing the existing real Padé13 scaling-and-squaring solver.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.

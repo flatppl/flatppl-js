@@ -2646,6 +2646,14 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
   const sole = positional.length === 1 && Object.keys(kwargs).length === 0;
   if (sole) {
     soleValue = evaluateObject(positional[0], env);
+    // Tuples retain their JS-array representation across refs. For a typed
+    // multi-input call excluding unary inputs, analysis has already verified
+    // this is a tuple splat, rather than a whole vector argument.
+    if (Array.isArray(soleValue)
+        && !require('./types.ts').acceptsPositional(desc.sig || { inputs }, 1)
+        && require('./types.ts').acceptsPositional(desc.sig || { inputs }, soleValue.length)) {
+      return desc.impl(...soleValue.map((value: any, i: number) => argument(value, inputs[i])));
+    }
     const fields = !require('./types.ts').acceptsPositional(desc.sig || { inputs }, 1)
       && _callSplatFields(soleValue, positional[0],
       inputs.map((input: any) => input.name), `${modAlias}.${bindingName}`);
