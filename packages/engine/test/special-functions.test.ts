@@ -161,3 +161,24 @@ i = imag(j)
     sf.bessel_y(-0.5,0), real(sf.bessel_i(0,0)), real(sf.bessel_i(1,0))]`, 'a');
   assert.deepEqual(Array.from(zero), [1, 0, 0, 1, 0]);
 });
+
+test('Bessel zero-argument limits and floating-point tails preserve their mathematical sign', async () => {
+  const values = await value(SF + `a = [real(sf.bessel_j(-0.5,0)), real(sf.bessel_j(-1.5,0)),
+    real(sf.bessel_i(-0.5,0)), real(sf.bessel_i(-1.5,0)), sf.bessel_y(0,0), sf.bessel_k(0,0),
+    real(sf.bessel_i(0,1000)), sf.bessel_k(0,1000), real(sf.bessel_j(50,1e-10))]`, 'a');
+  assert.deepEqual(values, [Infinity, -Infinity, Infinity, -Infinity, -Infinity, Infinity, Infinity, 0, 0]);
+});
+
+test('incomplete gamma and beta preserve small upper tails through truncated probability laws', async () => {
+  const { ctx } = makeMatCtx(`
+a0 = totalmass(truncate(Gamma(0.000001,1.0),interval(0.1,inf)))
+a1 = totalmass(truncate(Gamma(0.2,1.0),interval(0.3,inf)))
+a2 = totalmass(truncate(Gamma(10000.0,1.0),interval(10300.0,inf)))
+a3 = totalmass(truncate(Beta(20.0,30.0),interval(0.9,1)))
+a4 = totalmass(truncate(Beta(2.0,3.0),interval(0.9999,1)))`, { sampleCount: 1 });
+  const expected = [1.8229230253500977e-6, 0.18347320566634728,
+    0.0014704948963856815, 2.7314997305471282e-18, 3.999699999998678e-12];
+  for (let i = 0; i < expected.length; i++) {
+    close((await ctx.getMeasure(`a${i}`)).samples[0], expected[i], 2e-12, `upper tail ${i}`);
+  }
+});

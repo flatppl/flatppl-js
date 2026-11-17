@@ -5,7 +5,7 @@
       "name": "bessel_j",
       "args": [
         -3.7,
-        1e-06
+        0.000001
       ],
       "expected": -2.2121913359495716e+23
     },
@@ -31,7 +31,7 @@
         50,
         30
       ],
-      "expected": 2.0581656631563854e-08
+      "expected": 2.0581656631563854e-8
     },
     {
       "name": "bessel_j",
@@ -45,7 +45,7 @@
       "name": "bessel_y",
       "args": [
         -0.5,
-        1e-06
+        0.000001
       ],
       "expected": 0.0007978845608027331
     },
@@ -85,7 +85,7 @@
       "name": "bessel_i",
       "args": [
         -3.7,
-        1e-06
+        0.000001
       ],
       "expected": -2.2121913359491616e+23
     },
@@ -125,7 +125,7 @@
       "name": "bessel_k",
       "args": [
         -3.7,
-        1e-06
+        0.000001
       ],
       "expected": 4.2952151176517324e+23
     },
@@ -171,7 +171,7 @@
     {
       "name": "airy",
       "args": [
-        -1e-06
+        -0.000001
       ],
       "expected": 0.355028312707221
     },
@@ -200,7 +200,7 @@
       "name": "gammainc",
       "args": [
         0.1,
-        1e-06
+        0.000001
       ],
       "expected": 0.2640336543279224
     },
@@ -246,6 +246,202 @@
         0.4
       ],
       "expected": 0.05104231923040848
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        -2,
+        3
+      ],
+      "expected": 0.4860912605858912
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        -0.3,
+        20
+      ],
+      "expected": 0.12009245322631021
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        20.3,
+        35
+      ],
+      "expected": -0.07643329886886215
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        30.7,
+        50
+      ],
+      "expected": -0.031306375313902124
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        0.5,
+        100
+      ],
+      "expected": -0.04040213271625212
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        -2,
+        3
+      ],
+      "expected": -0.1604003934849238
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        -0.3,
+        20
+      ],
+      "expected": 0.1319183480770901
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        -2,
+        3
+      ],
+      "expected": 2.2452124409299516
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        -0.3,
+        20
+      ],
+      "expected": 43457799.76032156
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        0.5,
+        100
+      ],
+      "expected": 1.0724035825423102e+42
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        0,
+        710
+      ],
+      "expected": 3.3453345586196545e+306
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        0,
+        1e-100
+      ],
+      "expected": 230.374440815063
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        50,
+        1000
+      ],
+      "expected": 0
+    },
+    {
+      "name": "airy",
+      "args": [
+        -300
+      ],
+      "expected": 0.03872636290516491
+    },
+    {
+      "name": "airy",
+      "args": [
+        1e-100
+      ],
+      "expected": 0.3550280538878172
+    },
+    {
+      "name": "airy",
+      "args": [
+        100
+      ],
+      "expected": 2.6344821520883423e-291
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        10000,
+        10000
+      ],
+      "expected": 0.5013298083399552
+    },
+    {
+      "name": "betainc",
+      "args": [
+        1,
+        1,
+        0
+      ],
+      "expected": 0
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        100000000,
+        100000000
+      ],
+      "expected": 0.5000132980760141
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        100000000,
+        99970000
+      ],
+      "expected": 0.0013487164491615545
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        100000000,
+        100030000
+      ],
+      "expected": 0.998648919898398
+    },
+    {
+      "name": "betainc",
+      "args": [
+        1000000,
+        2000000,
+        0.33278900237010334
+      ],
+      "expected": 0.022728076714285103,
+      "oracle": "70-digit mpmath integration of the normalized beta density"
+    },
+    {
+      "name": "betainc",
+      "args": [
+        1000000,
+        2000000,
+        0.3333333333333333
+      ],
+      "expected": 0.5000542891707268,
+      "oracle": "70-digit mpmath integration of the normalized beta density"
+    },
+    {
+      "name": "betainc",
+      "args": [
+        1000000,
+        2000000,
+        0.3338776642965633
+      ],
+      "expected": 0.9772278398134261,
+      "oracle": "70-digit mpmath integration of the normalized beta density"
     }
   ]
 }

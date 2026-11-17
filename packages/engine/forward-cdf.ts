@@ -4,8 +4,8 @@
 // transform for TRUNCATED priors: a truncate(D, [lo,hi]) latent maps a cube
 // coord u through F_D^{-1}(F_D(lo) + u·(F_D(hi)-F_D(lo))), which needs F_D.
 const stdlibErfc     = require('@stdlib/math-base-special-erfc');
-const stdlibGammainc = require('@stdlib/math-base-special-gammainc');   // regularized P(x, s)
-const stdlibBetainc  = require('@stdlib/math-base-special-betainc');    // regularized I_x(a,b)
+const { regularizedGamma } = require('./incomplete-gamma.ts');
+const { regularizedBeta } = require('./incomplete-beta.ts');
 const stdlibGammaincinv = require('@stdlib/math-base-special-gammaincinv');
 const stdlibBetaincinv = require('@stdlib/math-base-special-betaincinv');
 const { QUANTILE, probit, numericalQuantile } = require('./inverse-cdf.ts');
@@ -18,8 +18,8 @@ const CDF: Record<string, (x: number, q: any) => number> = {
   LogNormal:   (x, q) => x <= 0 ? 0 : normCdf((Math.log(x) - q.mu) / q.sigma),
   Exponential: (x, q) => x <= 0 ? 0 : -Math.expm1(-q.rate * x),
   Uniform:     (x, q) => x <= q.lo ? 0 : (x >= q.hi ? 1 : (x - q.lo) / (q.hi - q.lo)),
-  Beta:        (x, q) => x <= 0 ? 0 : (x >= 1 ? 1 : stdlibBetainc(x, q.alpha, q.beta)),
-  Gamma:       (x, q) => x <= 0 ? 0 : stdlibGammainc(q.rate * x, q.shape),   // P(shape, rate·x)
+  Beta:        (x, q) => x <= 0 ? 0 : (x >= 1 ? 1 : regularizedBeta(q.alpha, q.beta, x)),
+  Gamma:       (x, q) => x <= 0 ? 0 : regularizedGamma(q.shape, q.rate * x),
   Cauchy:      (x, q) => Math.atan2(q.scale, q.location - x) / Math.PI,
   HalfCauchy:  (x, q) => x <= 0 ? 0 : 2 * Math.atan(x / q.scale) / Math.PI,
   HalfNormal:  (x, q) => x <= 0 ? 0 : 2 * normCdf(x / q.sigma) - 1,
@@ -29,16 +29,16 @@ const CDF: Record<string, (x: number, q: any) => number> = {
   Pareto:      (x, q) => x < q.scale ? 0 : 1 - Math.pow(q.scale / x, q.shape),
   Laplace:     (x, q) => { const z = (x - q.location) / q.scale; return z < 0 ? 0.5 * Math.exp(z) : 1 - 0.5 * Math.exp(-z); },
   // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x).
-  InverseGamma: (x, q) => x <= 0 ? 0 : stdlibGammainc(q.scale / x, q.shape, true, true),
+  InverseGamma: (x, q) => x <= 0 ? 0 : regularizedGamma(q.shape, q.scale / x, true),
   // ChiSquared(k) ≡ Gamma(shape=k/2, rate=1/2): F(x) = P(k/2, x/2). Verified vs
   // scipy.stats.chi2(df=k).cdf.
-  ChiSquared: (x, q) => x <= 0 ? 0 : stdlibGammainc(x / 2, q.k / 2),
+  ChiSquared: (x, q) => x <= 0 ? 0 : regularizedGamma(q.k / 2, x / 2),
   // Standard StudentT(nu): F(x) = 1 - ½·I_z(nu/2,½) for x>0, ½·I_z(nu/2,½) for
   // x≤0, with z = nu/(nu+x²) (symmetric in x so the same z serves both
   // tails). Verified vs scipy.stats.t(df=nu).cdf across nu∈{3,10} incl. tails.
   StudentT: (x, q) => {
     const z = q.nu / (q.nu + x * x);
-    const half = 0.5 * stdlibBetainc(z, q.nu / 2, 0.5);
+    const half = 0.5 * regularizedBeta(q.nu / 2, 0.5, z);
     return x > 0 ? 1 - half : half;
   },
 };
@@ -50,8 +50,8 @@ const SURVIVAL: Record<string, (x: number, q: any) => number> = {
   LogNormal: (x, q) => x <= 0 ? 1 : normCdf((q.mu - Math.log(x)) / q.sigma),
   Exponential: (x, q) => x <= 0 ? 1 : Math.exp(-q.rate * x),
   Uniform: (x, q) => x <= q.lo ? 1 : x >= q.hi ? 0 : (q.hi - x) / (q.hi - q.lo),
-  Beta: (x, q) => x <= 0 ? 1 : x >= 1 ? 0 : stdlibBetainc(x, q.alpha, q.beta, true, true),
-  Gamma: (x, q) => x <= 0 ? 1 : stdlibGammainc(q.rate * x, q.shape, true, true),
+  Beta: (x, q) => x <= 0 ? 1 : x >= 1 ? 0 : regularizedBeta(q.alpha, q.beta, x, true),
+  Gamma: (x, q) => x <= 0 ? 1 : regularizedGamma(q.shape, q.rate * x, true),
   Cauchy: (x, q) => Math.atan2(q.scale, x - q.location) / Math.PI,
   HalfCauchy: (x, q) => x <= 0 ? 1 : 2 * Math.atan2(q.scale, x) / Math.PI,
   HalfNormal: (x, q) => x <= 0 ? 1 : stdlibErfc(x / (q.sigma * Math.SQRT2)),
@@ -60,8 +60,8 @@ const SURVIVAL: Record<string, (x: number, q: any) => number> = {
   Rayleigh: (x, q) => x <= 0 ? 1 : Math.exp(-0.5 * (x / q.scale) ** 2),
   Pareto: (x, q) => x < q.scale ? 1 : Math.pow(q.scale / x, q.shape),
   Laplace: (x, q) => { const z = (x - q.location) / q.scale; return z > 0 ? 0.5 * Math.exp(-z) : 1 - 0.5 * Math.exp(z); },
-  InverseGamma: (x, q) => x <= 0 ? 1 : stdlibGammainc(q.scale / x, q.shape),
-  ChiSquared: (x, q) => x <= 0 ? 1 : stdlibGammainc(x / 2, q.k / 2, true, true),
+  InverseGamma: (x, q) => x <= 0 ? 1 : regularizedGamma(q.shape, q.scale / x),
+  ChiSquared: (x, q) => x <= 0 ? 1 : regularizedGamma(q.k / 2, x / 2, true),
   StudentT: (x, q) => CDF.StudentT(-x, q),
 };
 
