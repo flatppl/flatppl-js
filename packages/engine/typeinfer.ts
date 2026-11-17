@@ -556,7 +556,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     //     function returning a measure (the dist call's domain
     //     comes from the descriptor's `domain` field).
     if (desc.kind === 'function' && desc.sig) {
-      return desc.sig;
+      return desc.realResult ? { ...desc.sig, realResult: desc.realResult } : desc.sig;
     }
     if (desc.kind === 'value' && desc.valueType) {
       return desc.valueType;
@@ -5716,12 +5716,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(T.failed('not callable'), expr);
     }
 
-    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg);
+    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg, calleeType.realResult);
   }
 
   const reinferring = new Set<any>();
   function checkUserCall(expr: any, scopes: any, calleeType: any, callee: any,
-      calleeModule: any, local: boolean, reg: any): any {
+      calleeModule: any, local: boolean, reg: any, realResult?: any): any {
     const head = expr.target;
     // Check the available signature first. Direct reification bodies below
     // also receive the concrete argument types at this call site.
@@ -5821,6 +5821,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     // Positional first, then keyword. Spec allows both calling
     // conventions for user-defined callables with explicit boundaries.
+    // Specialize real-preserving numerical functions from the same normalized
+    // input types used for validation, after tuple/record splats. This also
+    // promotes integer matrices to real outputs when elimination has fractions.
+    const realNumeric = (t: any): boolean => t.kind === 'scalar'
+      ? ['boolean', 'integer', 'real'].includes(t.prim)
+      : t.kind === 'array' ? realNumeric(t.elem) : false;
+    let realInputs = Boolean(realResult);
     for (let i = 0; i < inputs.length; i++) {
       const inp = inputs[i];
       let actual: any = null, actualLoc = expr.loc;
@@ -5847,8 +5854,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           message: 'call to "' + head.name + '" missing argument "' + inp.name + '"',
           loc: expr.loc,
         });
+        realInputs = false;
         continue;
       }
+      if (realInputs) realInputs = realNumeric(actual);
       if (actual && actual.kind !== 'failed') {
         const s = T.unify(inp.type, actual, new Map());
         if (s == null) {
@@ -5947,7 +5956,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return write(polymorphic, expr);
       }
     }
-    return write(calleeType.result, expr);
+    return write(realInputs ? realResult : calleeType.result, expr);
   }
 
   // -------------------------------------------------------------------

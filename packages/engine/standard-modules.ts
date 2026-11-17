@@ -56,6 +56,9 @@ interface BindingDescriptor {
   /** Optional type signature in the engine's types.ts SIGNATURE_FACTORIES
    *  shape. When omitted, typeinfer falls back to `deferred`. */
   sig?: any;
+  /** Real-input result specialization, retaining real matrix consumers when
+   * the function also admits complex inputs. Argument validation uses sig. */
+  realResult?: any;
   /** Internal density-kernel name for a standard-module measure constructor. */
   op?: string;
 }
@@ -659,13 +662,15 @@ function _registerExtLinearAlgebra() {
   // the impl unchanged. Concrete shape validation happens inside the
   // impl (square-matrix checks, etc.).
   const dynMat = T.array(2, ['%dynamic', '%dynamic'], T.REAL);
+  const complexMat = T.array(2, ['%dynamic', '%dynamic'], T.COMPLEX);
 
   bindings.set('lu', {
     kind: 'function',
     sig: T.funcType(
-      [{ name: 'A', type: dynMat }],
-      T.record({ P: dynMat, L: dynMat, U: dynMat }),
+      [{ name: 'A', type: complexMat }],
+      T.record({ P: dynMat, L: complexMat, U: complexMat }),
     ),
+    realResult: T.record({ P: dynMat, L: dynMat, U: dynMat }),
     impl: extLinalg._lu,
   });
 
