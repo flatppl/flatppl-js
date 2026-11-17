@@ -5826,8 +5826,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // promotes integer matrices to real outputs when elimination has fractions.
     const realNumeric = (t: any): boolean => t.kind === 'scalar'
       ? ['boolean', 'integer', 'real'].includes(t.prim)
-      : t.kind === 'array' ? realNumeric(t.elem) : false;
+      : t.kind === 'array' ? realNumeric(t.elem)
+      : t.kind === 'record' ? Object.values(t.fields).every(realNumeric) : false;
     let realInputs = Boolean(realResult);
+    const actualInputs = calleeType.rhsResult ? new Map<string, any>() : null;
     for (let i = 0; i < inputs.length; i++) {
       const inp = inputs[i];
       let actual: any = null, actualLoc = expr.loc;
@@ -5856,6 +5858,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         });
         realInputs = false;
         continue;
+      }
+      actualInputs?.set(inp.name, actual);
+      if (inp.fixed) {
+        const arg = i < args.length ? args[i] : kwargs[inp.name];
+        // A generic callback's local boundary is checked when its body is
+        // re-inferred with concrete arguments; it is not itself a live flag.
+        if (arg && !arg.__splatType && !(arg.kind === 'ref' && arg.ns === '%local')
+            && resolveFixed && resolveFixed(arg) === undefined) {
+          diagnostics.push({ severity: 'error', loc: actualLoc,
+            message: head.name + ': argument "' + inp.name + '" must be fixed' });
+        }
       }
       if (realInputs) realInputs = realNumeric(actual);
       if (actual && actual.kind !== 'failed') {
@@ -5954,6 +5967,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (polymorphic && polymorphic.kind !== 'failed'
           && polymorphic.kind !== 'deferred' && polymorphic.kind !== 'any') {
         return write(polymorphic, expr);
+      }
+    }
+    // Factorized solves and least squares preserve the RHS rank. The type
+    // AST has no vector-or-matrix union, so validate that one numeric slot
+    // here and derive its result from the ordinary normalized call inputs.
+    if (calleeType.rhsResult) {
+      const rule = calleeType.rhsResult, rhs = actualInputs!.get(rule.input);
+      if (rhs?.kind === 'array' && [1, 2].includes(rhs.rank)
+          && rhs.elem?.kind === 'scalar' && T.unify(T.COMPLEX, rhs.elem, new Map()) !== null) {
+        const rows = rule.rowsFrom ? actualInputs!.get(rule.rowsFrom)?.shape?.[rule.axis] : rhs.shape[0];
+        return write(T.array(rhs.rank, [rows ?? '%dynamic', ...rhs.shape.slice(1)],
+          realInputs ? T.REAL : T.COMPLEX), expr);
+      }
+      if (rhs && !['any', 'deferred', 'failed'].includes(rhs.kind)) {
+        diagnostics.push({ severity: 'error', loc: expr.loc,
+          message: head.name + ': argument "' + rule.input + '" must be a numeric vector or matrix' });
+        return write(T.failed('solve right-hand side'), expr);
       }
     }
     return write(realInputs ? realResult : calleeType.result, expr);
