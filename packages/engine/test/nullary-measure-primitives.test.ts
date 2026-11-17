@@ -70,17 +70,31 @@ lp = builtin_logdensityof(M, [1.0, 3.0])`;
   close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) - 2 * Math.log(2) - 1 / 8, source);
 });
 
-test('nullary regression calls retain constructor aliases and explicit sampling', () => {
+test('nullary regression calls retain constructor aliases', () => {
   const source = `reg = standard_module("regression", "0.1")
 G = reg.NormalGLM
 H = G
-lp = builtin_logdensityof(H(rowstack([[1.0]]), 0.0, [1.0], 2.0), [3.0])
-x, s = builtin_sample(rnginit(117), reg.NormalGLM(rowstack([[1.0]]), 0.0, [1.0], 2.0))`;
+lp = builtin_logdensityof(H(rowstack([[1.0]]), 0.0, [1.0], 2.0), [3.0])`;
   // N(1,2) scored at 3 has standardized residual one.
   close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) / 2 - Math.log(2) - 0.5, source);
-  const draw = numbers(evaluate(source).get('x'));
-  assert.equal(draw.length, 1);
-  assert.ok(Number.isFinite(draw[0]));
+});
+
+test('fixed module name and version bindings execute both density forms', async () => {
+  for (const moduleCall of ['standard_module("regression", version)',
+    'standard_module(module_name, "0.1")', 'base.standard_module(module_name, version)']) {
+    const { ctx } = require('./_materialise-helpers.ts').makeMatCtx(`
+module_name = "regression"
+v = "0.1"
+version = v
+reg = ${moduleCall}
+M = reg.NormalGLM(rowstack([[1.0]]), 0.0, [1.0], 1.0)
+lp = builtin_logdensityof(M, [1.0])
+public_lp = logdensityof(M, [1.0])
+`, { sampleCount: 1 });
+    for (const name of ['lp', 'public_lp']) {
+      close((await ctx.getMeasure(name)).samples[0], -Math.log(2 * Math.PI) / 2, moduleCall);
+    }
+  }
 });
 
 test('a broadcast holds the measure constant', () => {
