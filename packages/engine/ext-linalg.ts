@@ -80,6 +80,7 @@ function _lu(A: any): any {
 function _kron(A: any, B: any): any {
   A = valueLib._logicalDense(A);
   B = valueLib._logicalDense(B);
+  if (A.im || B.im) return _complexKron(A, B);
   const m = A.shape[0], n = A.shape[1];
   const p = B.shape[0], q = B.shape[1];
   const outRows = m * p, outCols = n * q;
@@ -96,6 +97,23 @@ function _kron(A: any, B: any): any {
     }
   }
   return _matValue(out, outRows, outCols);
+}
+
+/** §09 complex Kronecker blocks use the same matrix layout as the real path.
+ * Zero real parts do not imply zero blocks when the coefficient is imaginary. */
+function _complexKron(A: any, B: any): any {
+  const [m, n] = A.shape, [p, q] = B.shape, cols = n * q;
+  const re = new Float64Array(m * p * cols), im = new Float64Array(re.length);
+  for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+    const ar = A.data[i * n + j], ai = A.im?.[i * n + j] || 0;
+    if (ar === 0 && ai === 0) continue;
+    for (let r = 0; r < p; r++) for (let c = 0; c < q; c++) {
+      const br = B.data[r * q + c], bi = B.im?.[r * q + c] || 0;
+      const index = (i * p + r) * cols + j * q + c;
+      re[index] = ar * br - ai * bi; im[index] = ar * bi + ai * br;
+    }
+  }
+  return valueLib.complexValue(re, im, [m * p, cols]);
 }
 
 // =====================================================================

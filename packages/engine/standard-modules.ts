@@ -677,9 +677,10 @@ function _registerExtLinearAlgebra() {
   bindings.set('kron', {
     kind: 'function',
     sig: T.funcType(
-      [{ name: 'A', type: dynMat }, { name: 'B', type: dynMat }],
-      dynMat,
+      [{ name: 'A', type: complexMat }, { name: 'B', type: complexMat }],
+      complexMat,
     ),
+    realResult: dynMat,
     impl: extLinalg._kron,
   });
 
