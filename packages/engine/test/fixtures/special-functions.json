@@ -478,6 +478,46 @@
       ],
       "expected": 1.29853419514015e-10,
       "oracle": "mpmath 70-digit integration of the normalized density"
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        50,
+        700
+      ],
+      "expected": 2.563456547725547e+301
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        -3,
+        2
+      ],
+      "expected": 0.21273995923985264
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        -3,
+        2
+      ],
+      "expected": 1.127783776840428
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        -3,
+        2
+      ],
+      "expected": -0.12894324947440208
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        20,
+        15
+      ],
+      "expected": 0.12478121503252497
     }
   ]
 }

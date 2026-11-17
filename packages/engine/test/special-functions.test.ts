@@ -169,6 +169,19 @@ test('Bessel zero-argument limits and floating-point tails preserve their mathem
   assert.deepEqual(values, [Infinity, -Infinity, Infinity, -Infinity, -Infinity, Infinity, Infinity, 0, 0]);
 });
 
+test('regularized functions and Gamma transports retain their support endpoint limits', async () => {
+  const actual = await value(SF + `a = [sf.gammainc(2,0), sf.betainc(2,3,0), sf.betainc(2,3,1),
+    sf.bessel_k(50,1e-10), real(sf.bessel_i(-3,0)),
+    builtin_fromuniform(Gamma,record(shape=2.0,rate=1.0),0.0),
+    builtin_fromuniform(Gamma,record(shape=2.0,rate=1.0),1.0),
+    builtin_fromuniform(InverseGamma,record(shape=2.0,scale=1.0),0.0),
+    builtin_fromuniform(InverseGamma,record(shape=2.0,scale=1.0),1.0),
+    builtin_fromuniform(Gamma,record(shape=0.001,rate=1.0),0.1)]`, 'a');
+  // K50(1e-10) exceeds the finite binary64 range. The tiny-shape lower
+  // Gamma quantile is below its subnormal range; these are proper limits.
+  assert.deepEqual(actual, [0, 0, 1, Infinity, 0, 0, Infinity, 0, Infinity, 0]);
+});
+
 test('Bessel backward recurrence retains absolute precision at oscillatory zeros', async () => {
   // SciPy jv at the exact binary64 arguments below. Relative error is
   // ill-conditioned at these zeros; the oscillatory amplitude is O(.1).
@@ -192,4 +205,12 @@ a4 = totalmass(truncate(Beta(2.0,3.0),interval(0.9999,1)))`, { sampleCount: 1 })
   for (let i = 0; i < expected.length; i++) {
     close((await ctx.getMeasure(`a${i}`)).samples[0], expected[i], 2e-12, `upper tail ${i}`);
   }
+});
+
+test('uniform Gamma expansion retains a representable far upper tail', async () => {
+  // Independent scipy.special.gammaincc(1e7,1.01e7). This is far enough
+  // from the mean to use the outer Temme coefficients, with Q still finite.
+  const { ctx } = makeMatCtx(`q = totalmass(truncate(Gamma(10000000.0,1.0),interval(10100000.0,inf)))`,
+    { sampleCount: 1 });
+  close((await ctx.getMeasure('q')).samples[0], 2.455322949189099e-218, 2e-12, 'far upper tail');
 });
