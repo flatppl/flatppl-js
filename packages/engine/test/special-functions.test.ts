@@ -169,6 +169,17 @@ test('Bessel zero-argument limits and floating-point tails preserve their mathem
   assert.deepEqual(values, [Infinity, -Infinity, Infinity, -Infinity, -Infinity, Infinity, Infinity, 0, 0]);
 });
 
+test('Bessel backward recurrence retains absolute precision at oscillatory zeros', async () => {
+  // SciPy jv at the exact binary64 arguments below. Relative error is
+  // ill-conditioned at these zeros; the oscillatory amplitude is O(.1).
+  const actual = await value(SF + `a = [real(sf.bessel_j(10,14.475500686554541)),
+    real(sf.bessel_j(20,25.41714081407252)), real(sf.bessel_j(50,57.116899160119175)),
+    real(sf.bessel_j(100,108.83616589840977))]`, 'a');
+  const expected = [-5.4158894522974994e-17, 2.345359210039478e-16,
+    -3.528998603162656e-16, -7.881769861961769e-16];
+  expected.forEach((want, i) => assert.ok(Math.abs(actual[i] - want) < 1e-15, `zero ${i}: ${actual[i]}`));
+});
+
 test('incomplete gamma and beta preserve small upper tails through truncated probability laws', async () => {
   const { ctx } = makeMatCtx(`
 a0 = totalmass(truncate(Gamma(0.000001,1.0),interval(0.1,inf)))

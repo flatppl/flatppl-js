@@ -134,7 +134,11 @@ function millerJ(v: number, x: number): number {
   for (let k = 0; k < 8; k++) {
     top += 16;
     const value = recur(top);
-    if (Math.abs(value - previous) <= 64 * Number.EPSILON * Math.abs(value)) return value;
+    // Oscillatory zeros are conditioned in absolute error: rounding the
+    // normalization can exceed a near-zero result's relative precision.
+    // Below the turning point retain relative precision for tiny Jν values.
+    const scale = x > v ? Math.max(Math.abs(value), Math.abs(j0), Math.abs(j1)) : Math.abs(value);
+    if (Math.abs(value - previous) <= 64 * Number.EPSILON * scale) return value;
     previous = value;
   }
   throw new Error('Bessel backward recurrence did not converge');
