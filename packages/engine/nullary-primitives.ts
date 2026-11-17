@@ -67,16 +67,29 @@ function expandNullaryPrimitives(ast: any): void {
     }
     if (node.type !== 'CallExpr' || !node.callee) return null;
     const callee = node.callee;
+    if (callee.type === 'Identifier' && values.has(callee.name) && !seen.has(callee.name)) {
+      const alias = values.get(callee.name);
+      if (alias.type === 'Identifier' || alias.type === 'FieldAccess') {
+        seen.add(callee.name);
+        return builtinMeasure({ ...node, callee: alias }, seen);
+      }
+    }
     if (callee.type === 'Identifier' && FLATPDL_KERNEL_TAGS.has(callee.name)
         && !values.has(callee.name)) {
       return { name: callee.name, call: node };
     }
     // A §09 member `alias.Dist(...)` on a standard module. Its kernel tag is the
     // bare member name, as the determiniser emits it.
-    if (callee.type === 'FieldAccess' && callee.object?.type === 'Identifier'
-        && PARTICLE_PHYSICS_DISTRIBUTIONS.has(callee.field)
-        && isCallTo(values.get(callee.object.name), 'standard_module')) {
-      return { name: callee.field, call: node };
+    if (callee.type === 'FieldAccess' && callee.object?.type === 'Identifier') {
+      const moduleCall = values.get(callee.object.name);
+      if (isCallTo(moduleCall, 'standard_module')) {
+        const [name, compat] = moduleCall.args || [];
+        const module = require('./standard-modules.ts').lookupStandardModule(name?.value, compat?.value);
+        if (module?.distributions?.has(callee.field)
+            || (name?.value === 'hepphys' && PARTICLE_PHYSICS_DISTRIBUTIONS.has(callee.field))) {
+          return { name: callee.field, call: node };
+        }
+      }
     }
     return null;
   }

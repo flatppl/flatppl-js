@@ -3629,6 +3629,8 @@ function analyze(ast: any, source: string, opts?: any) {
   // first-class, so locscale needs no derivation kind of its own.
   expandLocscaleStatements(ast, diagnostics);
 
+  require('./standard-modules.ts').canonicalizeStandardModuleArgs(ast);
+
   // Pre-pass: a closed built-in measure in a primitive's kernel slot becomes
   // its kernel and input record (spec §07: a measure is a nullary kernel).
   require('./nullary-primitives.ts').expandNullaryPrimitives(ast);

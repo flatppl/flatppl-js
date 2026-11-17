@@ -62,12 +62,63 @@ test('a closed built-in measure scores like its kernel form', () => {
   for (const [src, expected] of cases) close(evaluate(src).get('lp'), expected, src);
 });
 
+test('nullary regression primitives resolve the registered standard module', () => {
+  const source = `reg = standard_module("regression", "0.1")
+M = reg.NormalGLM(rowstack([[1.0], [2.0]]), 0.0, [1.0], 2.0)
+lp = builtin_logdensityof(M, [1.0, 3.0])`;
+  // Two independent N(x, 2) responses, with residuals zero and one.
+  close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) - 2 * Math.log(2) - 1 / 8, source);
+});
+
+test('nullary regression calls retain constructor aliases', () => {
+  const source = `reg = standard_module("regression", "0.1")
+G = reg.NormalGLM
+H = G
+lp = builtin_logdensityof(H(rowstack([[1.0]]), 0.0, [1.0], 2.0), [3.0])`;
+  // N(1,2) scored at 3 has standardized residual one.
+  close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) / 2 - Math.log(2) - 0.5, source);
+});
+
+test('fixed module name and version bindings execute both density forms', async () => {
+  for (const moduleCall of ['standard_module("regression", version)',
+    'standard_module(module_name, "0.1")', 'base.standard_module(module_name, version)']) {
+    const { ctx } = require('./_materialise-helpers.ts').makeMatCtx(`
+module_name = "regression"
+v = "0.1"
+version = v
+reg = ${moduleCall}
+M = reg.NormalGLM(rowstack([[1.0]]), 0.0, [1.0], 1.0)
+lp = builtin_logdensityof(M, [1.0])
+public_lp = logdensityof(M, [1.0])
+`, { sampleCount: 1 });
+    for (const name of ['lp', 'public_lp']) {
+      close((await ctx.getMeasure(name)).samples[0], -Math.log(2 * Math.PI) / 2, moduleCall);
+    }
+  }
+});
+
 test('a broadcast holds the measure constant', () => {
   const lp = numbers(evaluate('lp = builtin_logdensityof.(Normal(1.0, 2.0), [0.5, 1.0])').get('lp'));
   close(lp[0], -1.643335713764618, 'cell 0');
   close(lp[1], -1.612085713764618, 'cell 1');
   const u = numbers(evaluate('u = builtin_touniform.(Exponential(2.0), [0.5, 0.5])').get('u'));
   close(u[1], 0.6321205588285577, 'transport cell');
+});
+
+test('explicit base module factories retain nullary primitives under local shadowing', async () => {
+  const { ctx } = require('./_materialise-helpers.ts').makeMatCtx(`
+standard_module = fn(Dirac(_))
+version = "0.1"
+reg = base.standard_module("regression", version)
+M = reg.NormalGLM(rowstack([[1.0]]), 0.0, [1.0], 2.0)
+local_measure = standard_module(3.0)
+local_score = logdensityof(local_measure, 3.0)
+lp = builtin_logdensityof(M, [3.0])
+public_lp = logdensityof(M, [3.0])
+`, { sampleCount: 1 });
+  const expected = -Math.log(2 * Math.PI) / 2 - Math.log(2) - 0.5;
+  for (const name of ['lp', 'public_lp']) close((await ctx.getMeasure(name)).samples[0], expected, name);
+  assert.equal((await ctx.getMeasure('local_score')).samples[0], 0);
 });
 
 test('a nullary sample draws what the kernel form draws', () => {

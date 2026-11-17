@@ -64,6 +64,21 @@ interface BindingDescriptor {
 // loose semver matching is deferred.
 const _REGISTRY = new Map<string, StandardModuleEntry>();
 
+/** §04 module metadata accepts fixed string bindings, just as load_module
+ * does. Resolve aliases once before lowering and runtime registry extraction. */
+function canonicalizeStandardModuleArgs(ast: any): void {
+  const strings = require('./bundle-deps.ts').fixedStringAliases(ast);
+  // analyze's qualifyBoundCalls already maps explicit base calls to bare
+  // builtin heads, and shadowed calls to self heads. Preserve that decision.
+  for (const statement of ast.body) {
+    const call = statement.value;
+    const head = call?.callee;
+    if (call?.type !== 'CallExpr' || head?.type !== 'Identifier' || head.name !== 'standard_module') continue;
+    call.args = call.args.map((arg: any) => arg.type === 'Identifier' && typeof strings[arg.name] === 'string'
+      ? { type: 'StringLiteral', value: strings[arg.name], loc: arg.loc } : arg);
+  }
+}
+
 /**
  * Look up a standard module by name + compat. Returns null when no
  * registered module matches.
@@ -796,6 +811,7 @@ function _registerBuiltinStandardModules() {
 _registerBuiltinStandardModules();
 
 module.exports = {
+  canonicalizeStandardModuleArgs,
   moduleDistributionsOf,
   lookupStandardModule,
   standardModuleBinding,
