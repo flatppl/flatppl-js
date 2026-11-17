@@ -99,6 +99,21 @@ result = pushfwd((a,v) -> a+sum(v), lawof(r))
   }
 });
 
+test('named record arguments retain fixed real and complex scalar fields', async () => {
+  const { ctx } = makeMatCtx(`
+a ~ Normal(0,1)
+r = record(a = a, b = 3, c = 2+im)
+result = pushfwd((a,b,c) -> (a+b)*c, lawof(r))
+`, { sampleCount: 4, rootSeed: 132 });
+  const a: Float64Array = (await ctx.getMeasure('a')).samples;
+  const result = (await ctx.getMeasure('result')).value;
+  assert.deepEqual(result.shape, [4]);
+  for (let i = 0; i < 4; i++) {
+    assert.equal(result.data[i], 2*(a[i]+3));
+    assert.equal(result.im[i], a[i]+3);
+  }
+});
+
 test('the law of a fixed vector supplies whole vectors through constant weighting', async () => {
   const { ctx } = makeMatCtx(`
 a = [1,2]
