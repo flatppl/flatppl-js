@@ -67,6 +67,13 @@ function expandNullaryPrimitives(ast: any): void {
     }
     if (node.type !== 'CallExpr' || !node.callee) return null;
     const callee = node.callee;
+    if (callee.type === 'Identifier' && values.has(callee.name) && !seen.has(callee.name)) {
+      const alias = values.get(callee.name);
+      if (alias.type === 'Identifier' || alias.type === 'FieldAccess') {
+        seen.add(callee.name);
+        return builtinMeasure({ ...node, callee: alias }, seen);
+      }
+    }
     if (callee.type === 'Identifier' && FLATPDL_KERNEL_TAGS.has(callee.name)
         && !values.has(callee.name)) {
       return { name: callee.name, call: node };

@@ -70,6 +70,19 @@ lp = builtin_logdensityof(M, [1.0, 3.0])`;
   close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) - 2 * Math.log(2) - 1 / 8, source);
 });
 
+test('nullary regression calls retain constructor aliases and explicit sampling', () => {
+  const source = `reg = standard_module("regression", "0.1")
+G = reg.NormalGLM
+H = G
+lp = builtin_logdensityof(H(rowstack([[1.0]]), 0.0, [1.0], 2.0), [3.0])
+x, s = builtin_sample(rnginit(117), reg.NormalGLM(rowstack([[1.0]]), 0.0, [1.0], 2.0))`;
+  // N(1,2) scored at 3 has standardized residual one.
+  close(evaluate(source).get('lp'), -Math.log(2 * Math.PI) / 2 - Math.log(2) - 0.5, source);
+  const draw = numbers(evaluate(source).get('x'));
+  assert.equal(draw.length, 1);
+  assert.ok(Number.isFinite(draw[0]));
+});
+
 test('a broadcast holds the measure constant', () => {
   const lp = numbers(evaluate('lp = builtin_logdensityof.(Normal(1.0, 2.0), [0.5, 1.0])').get('lp'));
   close(lp[0], -1.643335713764618, 'cell 0');
