@@ -14,7 +14,8 @@ C=conj.(A)
 build=fn(record(M=rowstack([[complex(_,1.0),2.0],[0.0,3.0]])))
 result=build(t)
 M=result.M
-E=fill(complex(t,1.0),[0,0])
+n=lengthof(filter(fn(_<0),[1.0]))
+E=fill(complex(t,1.0),[n,n])
 `, { sampleCount: 64, rootSeed: 117 });
   const t = (await ctx.getMeasure('t')).samples;
   const a = await ctx.getMeasure('A'), c = await ctx.getMeasure('C'), m = await ctx.getMeasure('M');
