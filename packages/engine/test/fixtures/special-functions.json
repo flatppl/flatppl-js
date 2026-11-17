@@ -1,0 +1,251 @@
+{
+  "oracle": "SciPy 1.18.1",
+  "cases": [
+    {
+      "name": "bessel_j",
+      "args": [
+        -3.7,
+        1e-06
+      ],
+      "expected": -2.2121913359495716e+23
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        0.3,
+        0.7
+      ],
+      "expected": 0.7385918206202183
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        2.5,
+        8
+      ],
+      "expected": -0.2506185325166004
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        50,
+        30
+      ],
+      "expected": 2.0581656631563854e-08
+    },
+    {
+      "name": "bessel_j",
+      "args": [
+        2.3,
+        100
+      ],
+      "expected": 0.015196477634900604
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        -0.5,
+        1e-06
+      ],
+      "expected": 0.0007978845608027331
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        0.3,
+        0.7
+      ],
+      "expected": -0.547907204566866
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        2.5,
+        8
+      ],
+      "expected": -0.14378062987287696
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        50,
+        30
+      ],
+      "expected": -386759.3260273528
+    },
+    {
+      "name": "bessel_y",
+      "args": [
+        2.3,
+        100
+      ],
+      "expected": 0.0783381735729214
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        -3.7,
+        1e-06
+      ],
+      "expected": -2.2121913359491616e+23
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        0.3,
+        0.7
+      ],
+      "expected": 0.891900222752823
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        2.5,
+        8
+      ],
+      "expected": 282.4940504846608
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        50,
+        30
+      ],
+      "expected": 0.0001459010691646895
+    },
+    {
+      "name": "bessel_i",
+      "args": [
+        2.3,
+        100
+      ],
+      "expected": 1.0455847305178155e+42
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        -3.7,
+        1e-06
+      ],
+      "expected": 4.2952151176517324e+23
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        0.3,
+        0.7
+      ],
+      "expected": 0.6895624897569779
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        2.5,
+        8
+      ],
+      "expected": 0.00021135888447704258
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        50,
+        30
+      ],
+      "expected": 58.770686258007686
+    },
+    {
+      "name": "bessel_k",
+      "args": [
+        2.3,
+        100
+      ],
+      "expected": 4.780808423653455e-45
+    },
+    {
+      "name": "airy",
+      "args": [
+        -100
+      ],
+      "expected": 0.17675339323955203
+    },
+    {
+      "name": "airy",
+      "args": [
+        -1e-06
+      ],
+      "expected": 0.355028312707221
+    },
+    {
+      "name": "airy",
+      "args": [
+        0
+      ],
+      "expected": 0.3550280538878172
+    },
+    {
+      "name": "airy",
+      "args": [
+        2
+      ],
+      "expected": 0.03492413042327436
+    },
+    {
+      "name": "airy",
+      "args": [
+        50
+      ],
+      "expected": 4.5849417240747876e-104
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        0.1,
+        1e-06
+      ],
+      "expected": 0.2640336543279224
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        2,
+        1
+      ],
+      "expected": 0.2642411176571153
+    },
+    {
+      "name": "gammainc",
+      "args": [
+        100,
+        110
+      ],
+      "expected": 0.8417213299399129
+    },
+    {
+      "name": "betainc",
+      "args": [
+        0.2,
+        0.3,
+        1e-10
+      ],
+      "expected": 0.006452877343586782
+    },
+    {
+      "name": "betainc",
+      "args": [
+        2,
+        3,
+        0.5
+      ],
+      "expected": 0.6875
+    },
+    {
+      "name": "betainc",
+      "args": [
+        100,
+        120,
+        0.4
+      ],
+      "expected": 0.05104231923040848
+    }
+  ]
+}

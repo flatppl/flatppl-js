@@ -41,6 +41,11 @@ other scalar laws retain the CDF/survival difference path.
 binds live matrices and shared parameters. Each constructor returns one vector
 law, with explicit ordinary outer broadcasting.
 
+The §09 special-functions module covers the full catalogue. Real-order Bessel
+and Airy kernels live in `bessel-real-order.ts`; J/I use a complex codomain for
+their principal branch on negative real arguments. Incomplete gamma/beta share
+the existing scalar CDF implementations in `forward-cdf.ts`.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.

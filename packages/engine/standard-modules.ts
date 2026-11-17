@@ -737,8 +737,8 @@ function _registerExtLinearAlgebra() {
 
 // --- special-functions ----------------------------------------------
 //
-// Spec §09. erf, erfc, erfcx, digamma and polygamma are implemented. A call
-// to another §09 member refuses at type inference.
+// Spec §09. Bessel J/I may have a complex principal value for negative real
+// arguments and noninteger order. The other members return real values.
 
 const _erf = require('@stdlib/math-base-special-erf');
 // erfc keeps its own implementation: 1 - erf(x) cancels to 0 in the upper tail.
@@ -760,14 +760,29 @@ function _registerSpecialFunctions() {
     sig: T.funcType([{ name: 'n', type: T.INTEGER }, { name: 'x', type: T.REAL }], T.REAL),
     impl: _polygamma,
   });
+  const bessel = require('./bessel-real-order.ts');
+  for (const [name, impl, result] of [
+    ['bessel_j', bessel.besselJ, T.COMPLEX], ['bessel_y', bessel.besselY, T.REAL],
+    ['bessel_i', bessel.besselI, T.COMPLEX], ['bessel_k', bessel.besselK, T.REAL],
+  ]) bindings.set(name, { kind: 'function', impl: result === T.COMPLEX
+    ? (v: number, z: number) => {
+      const value = impl(v, z);
+      return typeof value === 'number' ? { re: value, im: 0 } : value;
+    } : impl,
+    sig: T.funcType([{ name: 'v', type: T.REAL }, { name: 'z', type: T.REAL }], result) });
+  bindings.set('airy', { kind: 'function', sig: unarySig(), impl: bessel.airy });
+  // These are exactly the regularized gamma and beta CDFs already used by
+  // scalar probability transforms. Keep their numerical implementation shared.
+  bindings.set('gammainc', { kind: 'function', sig: T.funcType([
+    { name: 'a', type: T.REAL }, { name: 'x', type: T.REAL },
+  ], T.REAL), impl: (a: number, x: number) => require('./forward-cdf.ts').cdf('Gamma', x, { shape: a, rate: 1 }) });
+  bindings.set('betainc', { kind: 'function', sig: T.funcType([
+    { name: 'a', type: T.REAL }, { name: 'b', type: T.REAL }, { name: 'x', type: T.REAL },
+  ], T.REAL), impl: (a: number, b: number, x: number) => require('./forward-cdf.ts').cdf('Beta', x, { alpha: a, beta: b }) });
   registerStandardModule({
     name: 'special-functions',
     compat: '0.1',
     bindings,
-    unimplemented: new Set([
-      'bessel_j', 'bessel_y', 'bessel_i', 'bessel_k',
-      'gammainc', 'betainc', 'airy',
-    ]),
   });
 }
 
