@@ -62,6 +62,19 @@ test('table-row kernel draws preserve rows and expand singleton row axes', async
   }
 });
 
+test('a unary kernel sees the rows of each sampled table', async () => {
+  const { ctx } = ctxFor(`
+x ~ Normal(0,1)
+t = table(v = [x,x+1])
+K(row) = Dirac(row.v)
+y ~ K.(t)
+`, 4);
+  const x: Float64Array = (await ctx.getMeasure('x')).samples;
+  const y = await ctx.getMeasure('y');
+  assert.deepEqual(y.value.shape, [4, 2]);
+  assert.deepEqual(Array.from(y.samples), Array.from(x).flatMap(a => [a, a+1]));
+});
+
 const LAM = 50.0;
 const S_MU = 5.0;
 const S_SIGMA = 0.5;
