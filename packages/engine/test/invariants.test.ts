@@ -82,10 +82,10 @@ test('invariant: REGISTRY discrete flag matches DISCRETE_DISTRIBUTIONS', () => {
 // ---------------------------------------------------------------------
 
 // The worker's evaluateCall handles a few non-ARITH_OPS ops inline (see
-// sampler.evaluateCall): tuple, tuple_get, get_field, record, rnginit,
+// sampler.evaluateCall): tuple, tuple_get, get_field, record, table, rnginit,
 // rngstate, rand. EVALUABLE_OPS lists those + ARITH_OPS keys.
 const SAMPLER_INLINE_EVALUABLE = new Set([
-  'tuple', 'tuple_get', 'get_field', 'record',
+  'tuple', 'tuple_get', 'get_field', 'record', 'table',
   // checked(value, condition): spec §07 value-preserving assertion;
   // dispatched inline in evaluateCall (carries a `condition` kwarg the
   // positional-spread ARITH_OPS shape doesn't handle).

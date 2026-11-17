@@ -85,6 +85,17 @@ Fixed scalar array literals also use value materialisation when a cell, such
 as a density score, has no synchronous fixed value. Reference-only stochastic
 arrays retain their joint-law derivation.
 
+Lifted record arrays retain their inferred shape. The fixed-value display adapter
+also retains the whole fixed atom privately, so record feeds reuse fixed fields
+without slicing their intrinsic axes. Boundary feeds pack whole atoms before
+worker dispatch, including projected fixed fields and named record arguments.
+Live tables use ordinary value derivations and retain table atoms through the
+worker. Batched broadcast packing preserves vector-valued rows.
+
+Sampled scalar multiplication uses reference provenance to distinguish a scalar
+batch from a shared vector of the same length. The per-atom evaluator retains
+complex coordinates and vector orientation, and packs diagonal cells logically.
+
 ## Pipeline overview
 
 For shared matrix × sampled vector evaluation, IR reference provenance resolves

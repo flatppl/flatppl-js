@@ -750,10 +750,9 @@ const EVALUABLE_OPS = new Set([
   // SAMPLEABLE_DISTRIBUTIONS member, which the function-broadcast
   // EVALUABLE path never sees.
   'broadcast',
-  // Field access: lowered from surface `obj.field` and from `record(
-  // a=x, b=y)` constructors. Both are pure value computations the
-  // evaluator handles.
-  'get_field', 'record',
+  // §03 field access and record/table constructors are pure value
+  // computations, including when their fields depend on sampled values.
+  'get_field', 'record', 'table',
   // checked(value, condition) — spec §07 value-preserving assertion.
   // sampler.evaluateCall dispatches it inline (it carries a `condition`
   // kwarg the positional ARITH_OPS shape doesn't); listed here so a
