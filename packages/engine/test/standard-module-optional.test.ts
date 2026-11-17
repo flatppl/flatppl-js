@@ -15,6 +15,10 @@ stdmod.registerStandardModule({ name: 'optional-test', compat: '0.1', bindings: 
     { name: 'x', type: T.REAL }, { name: 'y', type: T.REAL, fixed: true }, { name: 'b', type: T.REAL, optional: true },
     { name: 'c', type: T.REAL, optional: true },
   ], T.REAL), impl: (x: number, y: number, b = 2, c = 3) => x + y + b + c }],
+  ['basis', { kind: 'function', sig: T.funcType([
+    { name: 'x', type: T.REAL }, { name: 'degree', type: T.INTEGER, fixed: true },
+    { name: 'order', type: T.INTEGER, fixed: true, optional: true },
+  ], T.REAL), impl: (x: any, degree: any, order = 0) => V.asValue(x).data[0] + V.asValue(degree).data[0] + V.asValue(order).data[0] }],
   ['solve', { kind: 'function', sig: { ...T.funcType([
     { name: 'A', type: mat }, { name: 'b', type: T.any() },
   ], T.array(1, ['%dynamic'], T.COMPLEX)), rhsResult: { input: 'b' } },
@@ -54,4 +58,32 @@ z=r.solve(A,[1,2])
   assert.deepEqual(Array.from((await ctx.getMeasure('X')).samples), [1, 2, 3, 4]);
   assert.deepEqual(Array.from((await ctx.getMeasure('y')).samples), [0, .5]);
   assert.deepEqual(Array.from((await ctx.getMeasure('z')).samples), [1, 2]);
+});
+
+
+test('fixed spline-style degree/order fields keep their phase through record and broadcast normalization', async () => {
+  const { ctx } = makeMatCtx(HEAD + `
+t~Normal(0,1)
+args=record(x=t,degree=2,order=1)
+alias=args
+a=m.basis(alias)
+b=m.basis.([t,t],2)
+c=m.basis.(table(x=[1,2],degree=[2,2]))
+d=m.basis.(x=[t,t],degree=[2,2],order=1)
+`, { sampleCount: 1 });
+  const t = (await ctx.getMeasure('t')).samples[0];
+  assert.deepEqual(Array.from((await ctx.getMeasure('a')).samples), [t + 3]);
+  assert.deepEqual(Array.from((await ctx.getMeasure('b')).samples), [t + 2, t + 2]);
+  assert.deepEqual(Array.from((await ctx.getMeasure('c')).samples), [3, 4]);
+  assert.deepEqual(Array.from((await ctx.getMeasure('d')).samples), [t + 3, t + 3]);
+  for (const [call, input] of [
+    ['m.basis(record(x=1,degree=n))', 'degree'],
+    ['m.basis(record(x=1,degree=2,order=n))', 'order'],
+    ['m.basis.([1],[n])', 'degree'],
+    ['m.basis.(x=[1],degree=[n])', 'degree'],
+    ['m.basis.(table(x=[1],degree=[2],order=[n]))', 'order'],
+  ]) {
+    const result = require('..').processSource(HEAD + 'n=elementof(integers)\nbad=' + call);
+    assert.ok(result.diagnostics.some((d: any) => d.message.includes('argument "' + input + '" must be fixed')), call);
+  }
 });

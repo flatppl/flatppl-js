@@ -187,6 +187,9 @@ test('singular factors fail while near-singular and Hermitian projection paths r
   assert.throws(() => solves.luSolve(ext._lu(singular), [1, 1]), /singular/);
   assert.throws(() => solves.choleskySolve(singular, [1, 1]), /positive/);
   const factors = ext._lu(near);
+  factors.L.data[0] = 2;
+  assert.throws(() => solves.luSolve(factors, [1, 1]), /unit diagonal/);
+  factors.L.data[0] = 1;
   factors.P.data[3] = 0;
   assert.throws(() => solves.luSolve(factors, [1, 1]), /permutation/);
   assert.throws(() => ext._eigh(mat([[2, 1], [0, 2]])), /Hermitian/);
@@ -201,4 +204,32 @@ test('singular factors fail while near-singular and Hermitian projection paths r
   assert.throws(() => ext._eigh(mat([[NaN]])), /finite/);
   assert.throws(() => ext._rank(near, -2), /rtol/);
   assert.throws(() => ext._lstsq(near, [1, 1], -1, -1), /atol/);
+});
+
+
+test('triangular flags must remain fixed through record splats and optional broadcasts', async () => {
+  const prelude = HEAD + 't~Normal(0,1)\nA=rowstack([[1,0],[t,1]])\nb=[1,t+1]\n';
+  const { ctx } = makeMatCtx(prelude + 'x=e.solve_triangular(record(A=A,b=b,lower=true))', { sampleCount: 1 });
+  close((await ctx.getMeasure('x')).samples, [1, 1]);
+  for (const call of [
+    'e.solve_triangular(record(A=A,b=b,lower=t>0))',
+    'e.solve_triangular.([A],[b],[t>0])',
+    'e.solve_triangular.(A=[A],b=[b],lower=[t>0])',
+  ]) {
+    const result = require('..').processSource(prelude + 'x=' + call);
+    assert.ok(result.diagnostics.some((d: any) => d.message.includes('argument "lower" must be fixed')), call);
+  }
+});
+
+
+test('explicit zero cutoff preserves the sign of tiny nonzero singular modes', async () => {
+  const { ctx } = makeMatCtx(HEAD + `
+A=diagmat([1.0,-1e-18])
+P=e.pinv(A,0.0)
+X=e.lstsq(A,[1.0,1.0],0.0)
+R=e.rank(A,0.0)
+`, { sampleCount: 1 });
+  close((await ctx.getMeasure('P')).samples, [1, 0, 0, -1e18], 256);
+  close((await ctx.getMeasure('X')).samples, [1, -1e18], 256);
+  close((await ctx.getMeasure('R')).samples, [2]);
 });

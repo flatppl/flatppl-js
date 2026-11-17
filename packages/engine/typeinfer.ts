@@ -4073,6 +4073,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const isRecordHead = args[0]?.kind === 'ref' && args[0].ns === 'self'
       && args[0].name === 'record';
     let dataArgs: any[];
+    let dataNames: string[] | null = null;
     if (kwNames.length > 0) {
       // The record constructor declares its field names at the call site.
       const paramNames = isRecordHead ? kwNames : broadcastHeadParamNames(args[0], scopes);
@@ -4080,13 +4081,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // A parameter with no argument, or a keyword naming no parameter of the
       // head, is an ill-formed call the runtime binder throws on. Infer no
       // type for it rather than typing a call that cannot run.
-      if (kwNames.length + args.length - 1 !== paramNames.length) return T.deferred();
+      const interfaceType = isRecordHead ? null : inferExpr(args[0], scopes);
+      if (kwNames.some(name => !paramNames.includes(name))
+          || kwNames.length + args.length - 1 > paramNames.length) return T.deferred();
       dataArgs = [];
+      dataNames = [];
       for (const [i, name] of paramNames.entries()) {
         if (i < args.length - 1 && kwargs[name]) return T.failed('broadcast duplicate input');
         const src = i < args.length - 1 ? args[i + 1] : kwargs[name];
-        if (!src) return T.deferred();
+        if (!src) {
+          if (interfaceType?.inputs?.[i]?.optional) continue;
+          return T.deferred();
+        }
         dataArgs.push(src);
+        dataNames.push(name);
       }
     } else {
       if (args.length < 2) return T.deferred();
@@ -4281,19 +4289,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     // Phase 4: resolve cell-result type via the callable.
     let cellTypes = argClassif.map((c) => c.cellType);
+    let cellSources = dataArgs;
     const fn = args[0];
     const iface = inferExpr(fn, scopes);
     if (!kwNames.length && T.isCallable(iface) && !T.acceptsPositional(iface, cellTypes.length)) {
       const row = cellTypes.length === 1 && cellTypes[0];
       const decision = row?.kind === 'record'
         && require('./builtin-param-names.ts').namedDecision({ ...iface,
-          minArgs: iface.minArgs ?? iface.inputs.length }, Object.keys(row.fields));
+          minArgs: iface.minArgs ?? iface.inputs.filter((input: any) => !input.optional).length }, Object.keys(row.fields));
       if (!decision?.order) {
         diagnostics.push({ severity: 'error', loc: expr.loc,
           message: 'broadcast: inputs do not match the callable interface' });
         return T.failed('broadcast input interface');
       }
       cellTypes = decision.order.map((name: string) => row.fields[name]);
+      cellSources = decision.order.map((name: string) => splatFieldSource(dataArgs[0], name));
+      dataNames = decision.order;
     }
     // Domain gate first: a §07 collection-domain head over a scalar cell is
     // a static error, not a type to infer. Runs before the callable is
@@ -4338,8 +4349,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (calleeType.kind === 'function') {
           const kwargs: Record<string, any> = {};
           for (let i = 0; i < cellTypes.length; i++) {
-            const name = calleeType.inputs?.[i]?.name;
-            if (name) kwargs[name] = { __splatType: cellTypes[i] };
+            const name = dataNames?.[i] || calleeType.inputs?.[i]?.name;
+            if (name) kwargs[name] = { __splatType: cellTypes[i], __splatExpr: cellSources[i] };
           }
           elem = inferUserCall({ kind: 'call', target: fn, args: [], kwargs, loc: expr.loc }, scopes);
         }
@@ -5719,6 +5730,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg, calleeType.realResult);
   }
 
+  /** Preserve the field's own phase when a mixed live/fixed record splats.
+   * Whole-record evaluation would incorrectly make every field live. */
+  function splatFieldSource(source: any, name: string): any {
+    let record = source;
+    const seen = new Set<string>();
+    while (record?.kind === 'ref' && record.ns === 'self' && !seen.has(record.name)) {
+      seen.add(record.name);
+      const rhs = loweredModule.bindings.get(record.name)?.rhs;
+      if (!rhs) break;
+      record = rhs;
+    }
+    if (record?.kind === 'call' && ['record', 'table'].includes(record.op)) {
+      const field = record.fields?.find((f: any) => f.name === name);
+      if (field) return field.value;
+    }
+    return { kind: 'call', op: 'get_field', args: [source, { kind: 'lit', value: name }], loc: source?.loc };
+  }
+
   const reinferring = new Set<any>();
   function checkUserCall(expr: any, scopes: any, calleeType: any, callee: any,
       calleeModule: any, local: boolean, reg: any, realResult?: any): any {
@@ -5774,7 +5803,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         const splatKwargs: Record<string, any> = {};
         const unbindable: string[] = [];
         for (const k of fieldNames) {
-          if (inputNames.has(k)) splatKwargs[k] = { __splatType: fieldType(k) };
+          if (inputNames.has(k)) splatKwargs[k] = { __splatType: fieldType(k),
+            __splatExpr: splatFieldSource(args[0], k) };
           else unbindable.push(k);
         }
         if (unbindable.length > 0) {
@@ -5861,13 +5891,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       actualInputs?.set(inp.name, actual);
       if (inp.fixed) {
-        const arg = i < args.length ? args[i] : kwargs[inp.name];
+        const supplied = i < args.length ? args[i] : kwargs[inp.name];
+        const arg = supplied?.__splatExpr || supplied;
         // A generic callback's local boundary is checked when its body is
         // re-inferred with concrete arguments; it is not itself a live flag.
         if (arg && !arg.__splatType && !(arg.kind === 'ref' && arg.ns === '%local')
-            && resolveFixed && resolveFixed(arg) === undefined) {
-          diagnostics.push({ severity: 'error', loc: actualLoc,
-            message: head.name + ': argument "' + inp.name + '" must be fixed' });
+            && resolveFixed) {
+          const fixedValue = resolveFixed(arg);
+          if (fixedValue === undefined || fixedValue === resolveFixed.UNSUPPORTED) {
+            diagnostics.push({ severity: 'error', loc: actualLoc,
+              message: head.name + ': argument "' + inp.name + '" must be fixed' });
+          }
         }
       }
       if (realInputs) realInputs = realNumeric(actual);

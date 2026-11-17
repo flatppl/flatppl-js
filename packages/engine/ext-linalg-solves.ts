@@ -74,6 +74,11 @@ function luSolve(factors: any, inputB: any): any {
   if ([P, L, U].some(f => f.shape[0] !== n || f.shape[1] !== n)) {
     throw new Error('lu_solve: P, L and U must be equally sized square matrices');
   }
+  for (let i = 0; i < n; i++) {
+    if (L.data[i * n + i] !== 1 || (L.im?.[i * n + i] ?? 0) !== 0) {
+      throw new Error('lu_solve: L must have unit diagonal');
+    }
+  }
   const seen = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     let column = -1;
