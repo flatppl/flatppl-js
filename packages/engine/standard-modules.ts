@@ -778,6 +778,7 @@ function _registerSpecialFunctions() {
 // descriptors via `registerStandardModule` directly.
 function _registerBuiltinStandardModules() {
   _registerPolynomials();
+  registerStandardModule(require('./standard-distances.ts').distancesModule());
   registerStandardModule(require('./standard-splines.ts').splinesModule());
   _registerParticlePhysics();
   const regression = require('./regression.ts');

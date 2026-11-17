@@ -423,6 +423,18 @@ function unify(a: any, b: any, subst: any): any {
       return null;
     case 'measure':
       return unify(a.domain, b.domain, subst);
+    case 'function':
+    case 'kernel': {
+      if (!acceptsPositional(b, a.inputs.length) || a.inputs.length !== b.inputs.length) return null;
+      let s = subst;
+      for (let i = 0; i < a.inputs.length; i++) {
+        // A callback must accept every input its caller supplies. Results
+        // promote in the other direction, from the callback to the caller.
+        s = unify(b.inputs[i].type, a.inputs[i].type, s);
+        if (s == null) return null;
+      }
+      return unify(a.result, b.result, s);
+    }
     case 'likelihood':
       // Opaque at the type level (like rngstate) — kind match suffices.
       return subst;

@@ -2629,17 +2629,28 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
   const inputs = (desc.sig && desc.sig.inputs) || [];
   const kwargs = ir.kwargs || {};
   const positional = ir.args || [];
+  // §09 higher-order members receive ordinary callables with the same captured
+  // environment as direct application. Do not coerce function refs to numbers.
+  function argument(value: any, input: any): any {
+    if (input.type?.kind !== 'function') return value;
+    if (!value?.__flatpplCallable || !value.body) throw new Error('standard module: expected a callable input');
+    return (...args: any[]) => {
+      const callEnv = copyEnv(env);
+      for (let i = 0; i < value.params.length; i++) callEnv[value.params[i]] = args[i];
+      return evaluateExpr(value.body, callEnv);
+    };
+  }
   // §04 applies the same by-name splat to standard-module members. Evaluate a
   // sole argument once so opaque records and literal records take the same path.
   let soleValue: any;
   const sole = positional.length === 1 && Object.keys(kwargs).length === 0;
   if (sole) {
-    soleValue = evaluateExpr(positional[0], env);
+    soleValue = evaluateObject(positional[0], env);
     const fields = !require('./types.ts').acceptsPositional(desc.sig || { inputs }, 1)
       && _callSplatFields(soleValue, positional[0],
       inputs.map((input: any) => input.name), `${modAlias}.${bindingName}`);
     if (fields) {
-      return desc.impl(...inputs.map((input: any) => fields[input.name]));
+      return desc.impl(...inputs.map((input: any) => argument(fields[input.name], input)));
     }
   }
   const callArgs: any[] = [];
@@ -2650,7 +2661,7 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
     else if (i < positional.length)   argIR = positional[i];
     else throw new Error("evaluateCall: '" + modAlias + "."
       + bindingName + "' missing argument '" + paramName + "'");
-    callArgs.push(sole ? soleValue : evaluateExpr(argIR, env));
+    callArgs.push(argument(sole ? soleValue : evaluateObject(argIR, env), inputs[i]));
   }
   return desc.impl.apply(null, callArgs);
 }

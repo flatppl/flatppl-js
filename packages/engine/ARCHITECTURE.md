@@ -41,6 +41,9 @@ other scalar laws retain the CDF/survival difference path.
 binds live matrices and shared parameters. Each constructor returns one vector
 law, with explicit ordinary outer broadcasting.
 
+`standard-distances.ts` owns the nine §09 distance members. Higher-order module
+arguments use the ordinary callable evaluator and retain their captured values.
+
 Aggregate canonical metadata retains only statically inferred dimensions.
 Runtime axis lengths stay local to each invocation, since generic callbacks
 share IR across calls with different array shapes.
