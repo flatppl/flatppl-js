@@ -41,6 +41,9 @@ other scalar laws retain the CDF/survival difference path.
 binds live matrices and shared parameters. Each constructor returns one vector
 law, with explicit ordinary outer broadcasting.
 
+`standard-distances.ts` owns the nine §09 distance members. Higher-order module
+arguments use the ordinary callable evaluator and retain their captured values.
+
 The §09 special-functions module covers the full catalogue. Real-order Bessel
 and Airy kernels live in `bessel-real-order.ts`; J/I use a complex codomain for
 their principal branch on negative real arguments. Incomplete gamma/beta share
