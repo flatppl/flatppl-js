@@ -47,14 +47,17 @@ result = a * diagmat([1,2])
   assert.deepEqual(Array.from(result.data), Array.from(a).flatMap((x: number) => [x,0,0,2*x]));
 });
 
-test('a named sampled row vector keeps its orientation through a record argument', async () => {
+test('a named sampled row vector keeps its orientation through a weighted record argument', async () => {
   const { ctx } = makeMatCtx(`
 a ~ Normal(0,1)
 b = a * transpose([1,2])
 r = record(v = b, a = a)
-result = pushfwd(r -> r.a+r.v*[3,4], lawof(r))
+w = weighted(2, lawof(r))
+result = pushfwd(r -> r.a+r.v*[3,4], w)
 `, { sampleCount: 4, rootSeed: 132 });
   const a: Float64Array = (await ctx.getMeasure('a')).samples;
-  const result = (await ctx.getMeasure('result')).samples;
-  for (let i = 0; i < 4; i++) assert.ok(Math.abs(result[i]-12*a[i]) < 2e-12);
+  const result = await ctx.getMeasure('result');
+  assert.equal(result.logWeights.length, 4);
+  assert.ok(Math.abs(result.logTotalmass-Math.log(2)) < 2e-12);
+  for (let i = 0; i < 4; i++) assert.ok(Math.abs(result.samples[i]-12*a[i]) < 2e-12);
 });
