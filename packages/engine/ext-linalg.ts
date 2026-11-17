@@ -534,16 +534,34 @@ function _eigen(A: any): any {
 }
 
 function _generalEigenExtreme(A: any, maximum: boolean): number {
-  const { values } = require('./general-eigen.ts').eigen(A);
+  const { values, vectors } = require('./general-eigen.ts').eigen(A);
   if (values.data.length === 0) throw new Error('eigenvalue extrema require a nonempty spectrum');
   let scale = 0;
-  for (let i = 0; i < values.data.length; i++) scale = Math.max(scale, Math.hypot(values.data[i], values.im[i]));
+  for (let i = 0; i < A.data.length; i++) scale = Math.max(scale, Math.abs(A.data[i]), Math.abs(A.im?.[i] || 0));
+  scale ||= 1;
+  const n = values.data.length;
   let result = maximum ? -Infinity : Infinity;
-  for (let i = 0; i < values.data.length; i++) {
-    if (Math.abs(values.im[i]) > 64 * Number.EPSILON * scale) {
+  for (let j = 0; j < n; j++) {
+    let residual = 0, norm = 0;
+    for (let i = 0; i < n; i++) {
+      const vr = vectors.data[i * n + j], vi = vectors.im[i * n + j];
+      let rr = -(values.data[j] / scale * vr - values.im[j] / scale * vi);
+      let ri = -(values.data[j] / scale * vi + values.im[j] / scale * vr);
+      for (let k = 0; k < n; k++) {
+        const ar = A.data[i * n + k] / scale, ai = (A.im?.[i * n + k] || 0) / scale;
+        rr += ar * vectors.data[k * n + j] - ai * vectors.im[k * n + j];
+        ri += ar * vectors.im[k * n + j] + ai * vectors.data[k * n + j];
+      }
+      residual = Math.hypot(residual, rr, ri); norm = Math.hypot(norm, vr, vi);
+    }
+    // A large unrelated eigenvalue must not hide a small complex pair.
+    // Classify roundoff per eigenpair using its actual backward residual.
+    const tolerance = 64 * (residual * scale / norm
+      + Number.EPSILON * Math.hypot(values.data[j], values.im[j]));
+    if (Math.abs(values.im[j]) > tolerance) {
       throw new Error('eigenvalue extrema are undefined for complex eigenvalues (spec §09)');
     }
-    result = maximum ? Math.max(result, values.data[i]) : Math.min(result, values.data[i]);
+    result = maximum ? Math.max(result, values.data[j]) : Math.min(result, values.data[j]);
   }
   return result;
 }
