@@ -1937,14 +1937,8 @@ function _ensureAtomBatchedRegistered(): void {
 
   // Complex counterpart — per-atom complex matmul over [N, m, n] ×
   // [N, n, p]. Routes through _cxMatBatchedMatMul (planar re/im).
-  // The per-arg dtype matcher is strict: this variant fires only when
-  // BOTH operands are complex Values. A mixed real × complex pair
-  // matches NEITHER this variant nor the real one — dispatch throws
-  // "no variant matched" and the batched-aggregate harness catches it
-  // as fall-through to the generic lowering (correct, just not
-  // vectorised). An either-operand dtype pattern form would close
-  // that; it's the concrete motivation noted in the TODO's
-  // complex-mul migration item.
+  // The registry matches two complex operands. The sampler's mulN
+  // dispatch also sends mixed operands to this kernel.
   ops.registerVariant('mul', {
     argPatterns: [
       { rank: 2, dtype: 'complex' },

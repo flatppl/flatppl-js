@@ -1381,10 +1381,9 @@ function _nestedToValue(nested: any) {
 //   - scalar + shape=[N, ...]     → broadcast (data-level; works via
 //                                              the atom-indep add)
 //   - pointwise neg               → works at any rank via atom-indep neg
-//   - per-atom matrix × matrix (all three [N,m,n]/[m,n] mixes, real +
-//     complex) → `_matBatchedMatMul` / `_cxMatBatchedMatMul` below —
-//     reachable via the atom-aware variant registry
-//     (`ops.dispatch('mul', …, { atomN })`), NOT via mulN itself
+//   - per-atom matrix × matrix (all three [N,m,n]/[m,n] mixes)
+//     → `_matBatchedMatMul` / `_cxMatBatchedMatMul` below, with
+//     the complex kernel also used directly by mulN
 //
 // Deferred (uncommon today; lands when a use-case surfaces):
 //   - shape=[N, m, n] × shape=[N, n]    (atom-batched matrix × vector)
@@ -1533,6 +1532,7 @@ function _cxMatBatchedVecMul(A: any, V: any, N: any) {
 // folding (BLAS-gemm flag style); transpose flag on rank-3 inputs is
 // not supported in v1 (matches the real twin _matBatchedMatMul).
 function _cxMatBatchedMatMul(A: any, B: any, N: any) {
+  A = valueLib.densify(A); B = valueLib.densify(B);
   const aBatched = valueLib.isAtomBatched(A, N) && A.shape.length === 3;
   const bBatched = valueLib.isAtomBatched(B, N) && B.shape.length === 3;
   const aShape = aBatched ? A.shape.slice(1) : A.shape;
@@ -1547,12 +1547,8 @@ function _cxMatBatchedMatMul(A: any, B: any, N: any) {
       'mulN: complex matrix×matrix dimension mismatch per atom ('
       + JSON.stringify(aShape) + ' × ' + JSON.stringify(bShape) + ')');
   }
-  if (isTransposeView(A) || isTransposeView(B)) {
-    throw new Error(
-      'mulN: tagged complex matrix×matrix at rank-3 not supported '
-      + '(densify the transposed operand first)');
-  }
   const cA = readComplex(A), cB = readComplex(B);
+  const aSwap = isTransposeView(A), bSwap = isTransposeView(B);
   const aStride = m * n, bStride = n * p, oStride = m * p;
   const re = new Float64Array(N * oStride), im = new Float64Array(N * oStride);
   for (let atom = 0; atom < N; atom++) {
@@ -1563,8 +1559,8 @@ function _cxMatBatchedMatMul(A: any, B: any, N: any) {
       for (let j = 0; j < p; j++) {
         let sr = 0, si = 0;
         for (let k = 0; k < n; k++) {
-          const aIdx = aBase + i * n + k;
-          const bIdx = bBase + k * p + j;
+          const aIdx = aBase + (aSwap ? k * m + i : i * n + k);
+          const bIdx = bBase + (bSwap ? j * n + k : k * p + j);
           const ar = cA.re[aIdx], aim = cA.im[aIdx];
           const br = cB.re[bIdx], bim = cB.im[bIdx];
           sr += ar * br - aim * bim;
@@ -1709,6 +1705,10 @@ function mulN(a: any, b: any, N: any, atomAxes?: readonly [boolean, boolean]) {
   }
   // Atom-indep case.
   if (!aBatched && !bBatched) return mul(a, b);
+  if (_isCx(a, b) && a.shape.length === (aBatched ? 3 : 2)
+      && b.shape.length === (bBatched ? 3 : 2)) {
+    return _cxMatBatchedMatMul(a, b, N);
+  }
   // Scalar × atom-batched. Spec §07 admits `mul` on scalar-vector and
   // scalar-matrix, and a rank-0 operand has no axis to align against
   // the atom axis — so the atom-indep kernel's scalar broadcast already

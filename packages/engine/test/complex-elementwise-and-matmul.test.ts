@@ -15,6 +15,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
 const valueOps = require('../value-ops.ts');
 
 // =====================================================================
@@ -197,4 +198,24 @@ test('_cxMatBatchedMatMul: both per-atom — i·I × B[atom]', () => {
   assert.equal(out.data[0], 1); assert.equal(out.im[0], 0);
   assert.equal(out.data[4], 0); assert.equal(out.im[4], 1);
   assert.equal(out.data[7], 0); assert.equal(out.im[7], 1);
+});
+
+test('sampled matrix products handle rectangular complex adjoints and mixed types', async () => {
+  const { ctx } = makeMatCtx(`
+t ~ Bernoulli(0.5)
+A = rowstack([[complex(1.0, t), im], [2.0, complex(1.0, -1.0)], [im, 2.0]])
+B = rowstack([[t, 1.0], [0.0, 0.0], [0.0, 1.0]])
+G = adjoint(A) * A
+C = adjoint(A) * B
+`, { sampleCount: 8, rootSeed: 117 });
+  const [draws, G, C] = await Promise.all(['t', 'G', 'C'].map(key => ctx.getMeasure(key)));
+  assert.ok(draws.samples.includes(0) && draws.samples.includes(1));
+  for (const result of [G, C]) assert.deepEqual(result.value.shape, [8, 2, 2]);
+  for (let i = 0; i < draws.samples.length; i++) {
+    const t = draws.samples[i], start = i * 4, end = start + 4;
+    assert.deepEqual(Array.from(G.samples.slice(start, end)), [6 + t * t, 2 + t, 2 + t, 7]);
+    assert.deepEqual(Array.from(G.imag.slice(start, end)), [0, -3, 3, 0]);
+    assert.deepEqual(Array.from(C.samples.slice(start, end)), [t, 1, 0, 2]);
+    assert.deepEqual(Array.from(C.imag.slice(start, end)), [0 - t * t, -1 - t, 0 - t, -1]);
+  }
 });

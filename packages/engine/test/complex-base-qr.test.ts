@@ -47,3 +47,26 @@ orthogonal = adjoint(Q) * Q
   close(orthogonal.samples, [1, 0, 0, 1]);
   close(orthogonal.imag, [0, 0, 0, 0]);
 });
+
+test('thin complex qr reconstructs every sampled matrix', async () => {
+  const { ctx } = makeMatCtx(`
+t ~ Bernoulli(0.5)
+A = rowstack([[complex(1, t), im], [2.0, complex(1, -1)], [im, 2.0]])
+f = qr(A)
+Q = f.Q
+R = f.R
+reconstructed = Q * R
+orthogonal = adjoint(Q) * Q
+`, { sampleCount: 8, rootSeed: 117 });
+  const [draws, q, r, reconstructed, orthogonal] = await Promise.all(
+    ['t', 'Q', 'R', 'reconstructed', 'orthogonal'].map(key => ctx.getMeasure(key)));
+  assert.ok(draws.samples.includes(0) && draws.samples.includes(1));
+  assert.deepEqual(q.value.shape, [8, 3, 2]);
+  assert.deepEqual(r.value.shape, [8, 2, 2]);
+  for (let i = 0; i < draws.samples.length; i++) {
+    close(reconstructed.samples.subarray(i * 6, (i + 1) * 6), [1, 0, 2, 1, 0, 2]);
+    close(reconstructed.imag.subarray(i * 6, (i + 1) * 6), [draws.samples[i], 1, 0, -1, 1, 0]);
+    close(orthogonal.samples.subarray(i * 4, (i + 1) * 4), [1, 0, 0, 1]);
+    close(orthogonal.imag.subarray(i * 4, (i + 1) * 4), [0, 0, 0, 0]);
+  }
+});
