@@ -1148,10 +1148,10 @@ const SIGNATURE_FACTORIES = {
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),
   // qr(A) → record(Q, R): Q is m×n, R is n×n (spec §07 "Linear algebra").
-  qr:             () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+  qr:             () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
                            result: record({ Q: array(2, ['%dynamic', '%dynamic'], REAL),
-                             R: array(2, ['%dynamic', '%dynamic'], REAL) }) }),
+                             R: array(2, ['%dynamic', '%dynamic'], REAL) }), complexResult: true }),
   row_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),

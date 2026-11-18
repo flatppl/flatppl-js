@@ -291,6 +291,7 @@ function _matexp(A: any): any {
 // The base `qr` binding uses this same implementation (spec §07).
 
 function _qr(A: any): any {
+  if (valueLib.isComplexValue(A)) return require('./complex-qr.ts').qr(A);
   A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
   if (m < n) throw new Error('qr: requires m >= n (got ' + m + 'x' + n + ')');

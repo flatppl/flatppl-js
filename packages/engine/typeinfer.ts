@@ -1165,6 +1165,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   const matrixParamReported = new WeakSet();
   const surplusReported = new WeakSet();
 
+  // Widen every numeric field of a result such as qr's (Q, R) record.
+  function complexNumericResult(type: any): any {
+    if (type.kind === 'array') return T.array(type.rank, type.shape, T.COMPLEX);
+    if (type.kind === 'scalar') return T.COMPLEX;
+    if (type.kind === 'record') {
+      return T.record(Object.fromEntries(Object.entries(type.fields)
+        .map(([name, field]) => [name, complexNumericResult(field)])));
+    }
+    return type;
+  }
+
   function inferGenericCall(expr: any, scopes: any): any {
     const op = expr.op;
     const sig = T.signatureOf(op);
@@ -1299,10 +1310,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       s = next;
     }
     let result = T.substitute(sig.result, s);
-    if (complexResult) {
-      if (result.kind === 'array') result = T.array(result.rank, result.shape, T.COMPLEX);
-      else if (result.kind === 'scalar') result = T.COMPLEX;
-    }
+    if (complexResult) result = complexNumericResult(result);
     if (require('./regression.ts').NAMES.has(op) && result.kind === 'measure') {
       const x = kwargs.x || args[0];
       const xt = x && inferExpr(x, scopes);
