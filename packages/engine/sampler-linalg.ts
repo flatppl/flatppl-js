@@ -198,6 +198,7 @@ export function _choleskyValue(A: any): any {
   A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('lower_cholesky: argument must be a square matrix');
+  if (A.im) return _choleskyHermitian(A.data, A.im, n);
   const data = A.data;
   const L = new Float64Array(n * n);
   for (let i = 0; i < n; i++) {
@@ -216,6 +217,35 @@ export function _choleskyValue(A: any): any {
     }
   }
   return { shape: [n, n], data: L };
+}
+
+// Use the lower triangle, as in the real recurrence.
+function _choleskyHermitian(data: Float64Array, imag: Float64Array, n: number): any {
+  const re = new Float64Array(n * n), im = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    const row = i * n;
+    for (let j = 0; j <= i; j++) {
+      const pivotRow = j * n, p = row + j;
+      let sr = data[p], si = imag[p];
+      for (let k = 0; k < j; k++) {
+        const ir = re[row + k], ii = im[row + k];
+        const jr = re[pivotRow + k], ji = im[pivotRow + k];
+        sr -= ir * jr + ii * ji;
+        si -= ii * jr - ir * ji;
+      }
+      if (i === j) {
+        if (sr <= 0) {
+          throw new Error('lower_cholesky: matrix is not positive definite '
+            + '(non-positive pivot at row ' + i + ')');
+        }
+        re[p] = Math.sqrt(sr);
+      } else {
+        re[p] = sr / re[pivotRow + j];
+        im[p] = si / re[pivotRow + j];
+      }
+    }
+  }
+  return valueLib.complexValue(re, im, [n, n]);
 }
 
 export function _logAbsDetLU(A: any) {

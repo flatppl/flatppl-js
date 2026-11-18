@@ -1110,8 +1110,8 @@ const SIGNATURE_FACTORIES = {
   // string(x): the identity on strings (spec §07 "Scalar restrictions and constructors").
   string:  () => ({ args: [STRING], kwargs: {}, result: STRING }),
 
-  // Linear algebra (spec §07). Matrices are 2-D real arrays; vectors
-  // are 1-D real arrays. Most results stay deferred — the static
+  // Linear algebra (spec §07). Matrices have rank two and vectors have
+  // rank one. Most results stay deferred — the static
   // type system can't easily express n×n preservation across
   // transpose / inv etc. without a square-matrix shape variable.
   // transpose / adjoint accept matrix OR vector OR tvector per spec
@@ -1123,42 +1123,41 @@ const SIGNATURE_FACTORIES = {
                            result: deferred(), special: 'transpose' }),
   adjoint:        () => ({ args: [any()], kwargs: {},
                            result: deferred(), special: 'adjoint' }),
-  trace:          () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
-                           kwargs: {}, result: REAL }),
-  // quadform(A, x) = xᵀ A x (spec §07). A is a square matrix, x a
-  // length-n vector; result is a scalar.
-  quadform:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL),
-                                  array(1, ['%dynamic'], REAL)],
-                           kwargs: {}, result: REAL }),
-  diagmat:        () => ({ args: [array(1, ['%dynamic'], REAL)],
+  trace:          () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
+                           kwargs: {}, result: REAL, complexResult: true }),
+  // quadform(A, x) = x† A x (spec §07).
+  quadform:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX),
+                                  array(1, ['%dynamic'], COMPLEX)],
+                           kwargs: {}, result: REAL, complexResult: true }),
+  diagmat:        () => ({ args: [array(1, ['%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
-  self_outer:     () => ({ args: [array(1, ['%dynamic'], REAL)],
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
+  self_outer:     () => ({ args: [array(1, ['%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
-  det:            () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
+  det:            () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
+                           kwargs: {}, result: REAL, complexResult: true }),
+  logabsdet:      () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {}, result: REAL }),
-  logabsdet:      () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
-                           kwargs: {}, result: REAL }),
-  inv:            () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+  inv:            () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
-  linsolve:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL), any()],
-                           kwargs: {}, result: deferred() }),
-  lower_cholesky: () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
+  linsolve:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX), tvar('B')],
+                           kwargs: {}, result: tvar('B'), complexResult: true }),
+  lower_cholesky: () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
   // qr(A) → record(Q, R): Q is m×n, R is n×n (spec §07 "Linear algebra").
-  qr:             () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+  qr:             () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
                            result: record({ Q: array(2, ['%dynamic', '%dynamic'], REAL),
-                             R: array(2, ['%dynamic', '%dynamic'], REAL) }) }),
-  row_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                             R: array(2, ['%dynamic', '%dynamic'], REAL) }), complexResult: true }),
+  row_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
-  col_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
+  col_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
   // cross(a, b): 3-D vector cross product (spec §07). Both args are
   // length-3 vectors; result is a length-3 vector. Bilinear over ℂ
   // (no conjugation) — real-only signature here; complex args promote
@@ -1176,8 +1175,8 @@ const SIGNATURE_FACTORIES = {
   // diag(A, k=0) extracts the k-th diagonal of a matrix; result is
   // a rank-1 vector. `k` is optional (defaults to 0 per spec §07),
   // so its ordered interface admits either one or two arguments.
-  diag:           () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL), INTEGER], kwargs: {}, minArgs: 1,
-                           result: array(1, ['%dynamic'], REAL) }),
+  diag:           () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX), INTEGER], kwargs: {}, minArgs: 1,
+                           result: array(1, ['%dynamic'], REAL), complexResult: true }),
   // blockdiagmat(mats) — vector-of-matrices → block-diagonal matrix.
   // bandedmat(v, rows) — rank-1 v + integer rows → rank-2 matrix.
   blockdiagmat:   () => ({ args: [any()], kwargs: {},
@@ -1585,6 +1584,7 @@ function signatureOf(opName: string) {
     result:   fresh(sig.result),
     variadic: sig.variadic || null,
     special:  sig.special  || null,
+    ...(sig.complexResult === true ? { complexResult: true } : {}),
     ...(sig.minArgs !== undefined ? { minArgs: sig.minArgs } : {}),
   };
   for (const k in sig.kwargs) out.kwargs[k] = fresh(sig.kwargs[k]);

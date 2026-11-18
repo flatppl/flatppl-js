@@ -32,6 +32,19 @@ function _array(rank: number, shape: any[], elem: any) {
   return { kind: 'array', rank, shape, elem };
 }
 const _REAL = { kind: 'scalar', prim: 'real' };
+const _COMPLEX = { kind: 'scalar', prim: 'complex' };
+
+// §07 Linear algebra: the kernels accept both numeric planes, while real
+// inputs continue to produce real results.
+function _numericMatrixSignature(inputRank: number, resultRank: number) {
+  const extents = (rank: number) => Array<string>(rank).fill('%dynamic');
+  return {
+    args: [_array(inputRank, extents(inputRank), _COMPLEX)],
+    kwargs: {},
+    result: resultRank ? _array(resultRank, extents(resultRank), _REAL) : _REAL,
+    complexResult: true,
+  };
+}
 
 // =====================================================================
 // cross(a, b) — 3-D vector cross product (spec §07)
@@ -39,10 +52,8 @@ const _REAL = { kind: 'scalar', prim: 'real' };
 //
 // Logical shape: vec3 × vec3 → vec3 (rank 1 inputs, rank 1 output).
 // The atom-batched form (shape=[N, 3]) takes the real-only
-// `_crossBatched` tight loop below; complex / non-atom-batched
-// shapes fall back to the inline per-atom loop in
-// `_crossBatchedOrFallback`. Logical impl mirrors `ARITH_OPS.cross`
-// exactly; the conformance suite pins equivalence.
+// `_crossBatched` tight loop below. Complex inputs use the shared per-atom
+// fallback and preserve both planes of the bilinear cross product.
 
 function _crossLogical(a: any, b: any): any {
   const aIsVal = valueLib.isValue(a);
@@ -134,12 +145,7 @@ function _crossBatched(args: any[], N: number): any {
   }
   const A = asAtomMajor(a);
   const B = asAtomMajor(b);
-  if (!A || !B) {
-    // Signal fallback — dispatcher would otherwise have called us
-    // unconditionally. Easiest way is to do the per-atom work here
-    // ourselves; matches the dispatcher's stitching semantics.
-    return null;
-  }
+  if (!A || !B) return null;
   // Tight Float64Array loop. Reads:
   //   a stride: 3 if batched, else 0 (broadcast)
   //   b stride: 3 if batched, else 0
@@ -156,60 +162,21 @@ function _crossBatched(args: any[], N: number): any {
   return { shape: [N, 3], data: out };
 }
 
-// Wrapper that calls the fast-path when applicable, falls back to
-// the dispatcher's per-atom path otherwise. The dispatcher itself
-// invokes `batched` unconditionally for atom-batched inputs, so we
-// handle "not eligible for fast-path" by running the per-atom loop
-// inline (same as what the dispatcher would do without `batched`).
-function _crossBatchedOrFallback(args: any[], N: number): any {
-  const fast = _crossBatched(args, N);
-  if (fast !== null) return fast;
-  // Fallback: per-atom logical N times, stack. Same machinery the
-  // dispatcher uses; we invoke directly here.
-  const perAtom: any[] = new Array(N);
-  for (let i = 0; i < N; i++) {
-    const sliced = args.map((v: any) => {
-      if (valueLib.isAtomBatched(v, N) && v.shape.length === 2) {
-        const tailLen = v.shape[1];
-        const subData = v.data.subarray(i * tailLen, (i + 1) * tailLen);
-        const sub: any = { shape: [tailLen], data: subData };
-        if (v.dtype === 'complex' && v.im) {
-          sub.dtype = 'complex';
-          sub.im = v.im.subarray(i * tailLen, (i + 1) * tailLen);
-        }
-        return sub;
-      }
-      return v;
-    });
-    perAtom[i] = _crossLogical(sliced[0], sliced[1]);
-  }
-  // Stack to shape=[N, 3]. Complex outputs preserve im part.
-  const first = perAtom[0];
-  const isComplex = valueLib.isComplexValue(first);
-  const out = new Float64Array(N * 3);
-  const outIm = isComplex ? new Float64Array(N * 3) : null;
-  for (let i = 0; i < N; i++) {
-    out.set(perAtom[i].data, i * 3);
-    if (outIm && perAtom[i].im) outIm.set(perAtom[i].im, i * 3);
-  }
-  if (outIm) return valueLib.complexValue(out, outIm, [N, 3]);
-  return { shape: [N, 3], data: out };
-}
-
 ops.register({
   name: 'cross',
   signature: {
-    args: [_array(1, [3], _REAL), _array(1, [3], _REAL)],
+    args: [_array(1, [3], _COMPLEX), _array(1, [3], _COMPLEX)],
     kwargs: {},
     result: _array(1, [3], _REAL),
+    complexResult: true,
   },
   argRanks: [1, 1],
   logical: _crossLogical,
-  batched: _crossBatchedOrFallback,
+  batched: _crossBatched,
 });
 
 // =====================================================================
-// self_outer(v) — vᵀ × v outer product (spec §07)
+// self_outer(v) — v × v† outer product (spec §07)
 // =====================================================================
 //
 // Logical shape: vec(n) → mat(n, n) (rank 1 input, rank 2 output).
@@ -224,6 +191,7 @@ function _selfOuterLogical(v: any): any {
       throw new Error('self_outer: argument must be a rank-1 vector, got shape='
         + JSON.stringify(D.shape));
     }
+    if (valueLib.isComplexValue(D)) return valueOps.mul(D, valueLib.adjoint(D));
     const n = D.shape[0];
     const out = new Float64Array(n * n);
     for (let i = 0; i < n; i++) {
@@ -267,11 +235,7 @@ function _selfOuterBatchedOrFallback(args: any[], N: number): any | null {
 
 ops.register({
   name: 'self_outer',
-  signature: {
-    args: [_array(1, ['%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(1, 2),
   argRanks: [1],
   logical: _selfOuterLogical,
   batched: _selfOuterBatchedOrFallback,
@@ -286,17 +250,22 @@ ops.register({
 // the diagonal vector (O(n)) without densification.
 
 function _traceLogical(M: any): any {
-  if (valueLib.isDiagStored(M) && !M.im) {
-    let s = 0; for (let i = 0; i < M.data.length; i++) s += M.data[i];
-    return valueLib.scalar(s);
-  }
   if (valueLib.isValue(M)) {
-    const D = valueLib.densify(M);
-    const n = D.shape[0];
-    if (n !== D.shape[1]) throw new Error('trace: argument must be a square matrix');
-    let s = 0;
-    for (let i = 0; i < n; i++) s += D.data[i * n + i];
-    return valueLib.scalar(s);
+    valueLib.requireMatrix(M, 'trace');
+    const [m, n] = M.shape;
+    if (m !== n) throw new Error('trace: argument must be a square matrix');
+    // The diagonal is invariant to transposition. Conjugation flips its
+    // imaginary sum, and diagonal storage packs it at unit stride.
+    const stride = valueLib.isDiagStored(M) ? 1 : n + 1;
+    const sumDiagonal = (plane: Float64Array) => {
+      let sum = 0;
+      for (let i = 0; i < n; i++) sum += plane[i * stride];
+      return sum;
+    };
+    const re = sumDiagonal(M.data);
+    if (!valueLib.isComplexValue(M)) return valueLib.scalar(re);
+    const im = sumDiagonal(M.im);
+    return valueLib.complexValue([re], [valueLib.isConjugateView(M) ? -im : im], []);
   }
   if (!Array.isArray(M)) throw new Error('trace: argument must be a matrix');
   const n = M.length;
@@ -339,11 +308,7 @@ function _traceBatchedOrFallback(args: any[], N: number): any | null {
 
 ops.register({
   name: 'trace',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _REAL,
-  },
+  signature: _numericMatrixSignature(2, 0),
   argRanks: [2],
   logical: _traceLogical,
   batched: _traceBatchedOrFallback,
@@ -364,7 +329,8 @@ function _diagmatLogical(v: any): any {
       throw new Error('diagmat: argument must be a rank-1 vector, got shape='
         + JSON.stringify(v.shape));
     }
-    return valueLib.diagMatrix(v.data, v.im);
+    const d = valueLib._logicalDense(v);
+    return valueLib.diagMatrix(d.data, d.im);
   }
   return valueLib.diagMatrix(v instanceof Float64Array ? v : Float64Array.from(v));
 }
@@ -407,13 +373,18 @@ function _logicalStackArgs(args: any[]): any[] {
 
 // One wrapper per kernel, each with its own direct call, so the kernels stay
 // monomorphic call targets instead of sharing one closure.
-const _detBatchedLogical = (args: any[], N: number): any => _detBatched(_logicalStackArgs(args), N);
-const _logabsdetBatchedLogical = (args: any[], N: number): any => _logabsdetBatched(_logicalStackArgs(args), N);
-const _invBatchedLogical = (args: any[], N: number): any => _invBatchedOrFallback(_logicalStackArgs(args), N);
+const _detBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _detBatched(_logicalStackArgs(args), N);
+const _logabsdetBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _logabsdetBatched(_logicalStackArgs(args), N);
+const _invBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _invBatched(_logicalStackArgs(args), N);
 const _lowerCholeskyBatchedLogical = (args: any[], N: number): any =>
-  _lowerCholeskyBatchedOrFallback(_logicalStackArgs(args), N);
-const _rowGramBatchedLogical = (args: any[], N: number): any => _rowGramBatched(_logicalStackArgs(args), N);
-const _colGramBatchedLogical = (args: any[], N: number): any => _colGramBatched(_logicalStackArgs(args), N);
+  valueLib.isComplexValue(args[0]) ? null : _lowerCholeskyBatchedOrFallback(_logicalStackArgs(args), N);
+const _rowGramBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _rowGramBatched(_logicalStackArgs(args), N);
+const _colGramBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _colGramBatched(_logicalStackArgs(args), N);
 
 // Pack N per-atom Float64Array results (each of length k) into one
 // atom-batched Value shape=[N, ...inner]. Helper for batched linalg
@@ -430,17 +401,12 @@ function _packAtoms(perAtom: any[], N: number, innerShape: number[]): any {
   return { shape: [N].concat(innerShape), data: out };
 }
 
-// diagmat batched: input [N, k] → output [N, k, k]. Per-atom
-// constructs a diagonal matrix; uses diag-stored representation
-// (struct = ST_DIAG) when the inner logical produces one.
+// Real diagmat batches write directly into the dense output [N, k, k].
+// The complex fallback packs both planes from the logical diagonal cells.
 function _diagmatBatched(args: any[], N: number): any {
   const v = args[0];
-  if (!valueLib.isValue(v) || v.shape.length !== 2 || v.shape[0] !== N) {
-    // Not atom-batched in the canonical sense — defer to per-atom.
-    const perAtom: any[] = new Array(N);
-    for (let i = 0; i < N; i++) perAtom[i] = _diagmatLogical(_atomSlice(v, i, N));
-    return _packAtoms(perAtom, N, perAtom[0].shape);
-  }
+  if (!valueLib.isValue(v) || valueLib.isComplexValue(v)
+      || v.shape.length !== 2 || v.shape[0] !== N) return null;
   const k = v.shape[1];
   // Output: [N, k, k] dense. (Could store diag-tagged, but the
   // variant dispatcher's downstream consumers may densify anyway;
@@ -458,11 +424,7 @@ function _diagmatBatched(args: any[], N: number): any {
 
 ops.register({
   name: 'diagmat',
-  signature: {
-    args: [_array(1, ['%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(1, 2),
   argRanks: [1],
   logical: _diagmatLogical,
   batched: _diagmatBatched,
@@ -477,6 +439,10 @@ ops.register({
 
 function _detLogical(A: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'det');
+  if (valueLib.isComplexValue(A)) {
+    const lu = require('./complex-lu.ts');
+    return lu.determinant(A);
+  }
   if (valueLib.isDiagStored(A) && !A.im) {
     let p = 1; for (let i = 0; i < A.data.length; i++) p *= A.data[i];
     return valueLib.scalar(p);
@@ -516,11 +482,7 @@ function _detBatched(args: any[], N: number): any {
 
 ops.register({
   name: 'det',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _REAL,
-  },
+  signature: _numericMatrixSignature(2, 0),
   argRanks: [2],
   logical: _detLogical,
   batched: _detBatchedLogical,
@@ -532,6 +494,10 @@ ops.register({
 
 function _logabsdetLogical(A: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'logabsdet');
+  if (valueLib.isComplexValue(A)) {
+    const lu = require('./complex-lu.ts');
+    return valueLib.scalar(lu.logAbsDeterminant(A));
+  }
   if (valueLib.isDiagStored(A) && !A.im) {
     let s = 0;
     for (let i = 0; i < A.data.length; i++) s += Math.log(Math.abs(A.data[i]));
@@ -568,7 +534,7 @@ function _logabsdetBatched(args: any[], N: number): any {
 ops.register({
   name: 'logabsdet',
   signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
+    args: [_array(2, ['%dynamic', '%dynamic'], _COMPLEX)],
     kwargs: {},
     result: _REAL,
   },
@@ -586,6 +552,10 @@ ops.register({
 
 function _invLogical(A: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'inv');
+  if (valueLib.isComplexValue(A)) {
+    const lu = require('./complex-lu.ts');
+    return lu.inverse(A);
+  }
   if (valueLib.isDiagStored(A) && !A.im) {
     const d = new Float64Array(A.data.length);
     for (let i = 0; i < d.length; i++) {
@@ -632,46 +602,9 @@ function _invBatched(args: any[], N: number): any {
   return { shape: [N, n, n], data: out };
 }
 
-function _invBatchedOrFallback(args: any[], N: number): any {
-  const fast = _invBatched(args, N);
-  if (fast !== null) return fast;
-  // Per-atom fallback inline (diag-stored Values, complex, anything
-  // non-batched-Value).
-  const perAtom: any[] = new Array(N);
-  const A = args[0];
-  for (let i = 0; i < N; i++) {
-    let atomA: any = A;
-    if (valueLib.isAtomBatched(A, N) && A.shape.length === 3) {
-      const stride = A.shape[1] * A.shape[2];
-      const subData = A.data.subarray(i * stride, (i + 1) * stride);
-      atomA = { shape: [A.shape[1], A.shape[2]], data: subData };
-    }
-    perAtom[i] = _invLogical(atomA);
-  }
-  // All results should be matrices of consistent shape; densify any
-  // diag-stored entries (rare, but possible if diag fast-path fired
-  // per atom) before stacking.
-  const tailShape = valueLib.isValue(perAtom[0])
-    ? valueLib.densify(perAtom[0]).shape
-    : [perAtom[0].length, perAtom[0][0].length];
-  const tailLen = tailShape.reduce((a: number, b: number) => a * b, 1);
-  const out = new Float64Array(N * tailLen);
-  for (let i = 0; i < N; i++) {
-    const d = valueLib.isValue(perAtom[i])
-      ? valueLib.densify(perAtom[i]).data
-      : perAtom[i];
-    out.set(d, i * tailLen);
-  }
-  return { shape: [N, ...tailShape], data: out };
-}
-
 ops.register({
   name: 'inv',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(2, 2),
   argRanks: [2],
   logical: _invLogical,
   batched: _invBatchedLogical,
@@ -784,7 +717,7 @@ ops.register({
 });
 
 // =====================================================================
-// lower_cholesky(A) — lower-triangular L with A = L Lᵀ (PD A)
+// lower_cholesky(A) — lower-triangular L with A = L L† (PD A).
 // =====================================================================
 //
 // Phase 2 migration. Diag-stored PD A: L = √diag (still diagonal,
@@ -866,11 +799,7 @@ function _lowerCholeskyBatchedOrFallback(args: any[], N: number): any {
 
 ops.register({
   name: 'lower_cholesky',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(2, 2),
   argRanks: [2],
   logical: _lowerCholeskyLogical,
   batched: _lowerCholeskyBatchedLogical,
@@ -919,11 +848,7 @@ function _rowGramBatched(args: any[], N: number): any {
 
 ops.register({
   name: 'row_gram',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(2, 2),
   argRanks: [2],
   logical: _rowGramLogical,
   batched: _rowGramBatchedLogical,
@@ -955,11 +880,7 @@ function _colGramBatched(args: any[], N: number): any {
 
 ops.register({
   name: 'col_gram',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(2, 2),
   argRanks: [2],
   logical: _colGramLogical,
   batched: _colGramBatchedLogical,
@@ -1023,7 +944,7 @@ ops.register({
 // Otherwise: LU + back-substitution.
 function _linsolveLogical(A: any, b: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'linsolve');
-  if (valueLib.isDiagStored(A) && !A.im) {
+  if (valueLib.isDiagStored(A) && !A.im && !valueLib.isComplexValue(b)) {
     const d = A.data, m = d.length;
     const bv = valueLib.isValue(b) ? b : null;
     const bd = bv ? bv.data : b;
@@ -1037,8 +958,10 @@ function _linsolveLogical(A: any, b: any): any {
     }
   }
   if (valueLib.isValue(A) || valueLib.isValue(b)) {
-    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
-    const bV = valueLib.isValue(b) ? valueLib.densify(b) : valueLib.asValue(b);
+    const aV = valueLib.asValue(A), bV = valueLib.asValue(b);
+    if (valueLib.isComplexValue(aV) || valueLib.isComplexValue(bV)) {
+      return require('./complex-lu.ts').solve(aV, bV);
+    }
     return linalg._linsolveLUValue(aV, bV);
   }
   if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
@@ -1127,6 +1050,11 @@ function _vectorFromElements(xs: any[]): any {
     }
     return { shape: [xs.length], data: data };
   }
+  // §03 permits mixed real and complex scalar entries. asValue packs
+  // both planes and embeds real entries with zero imaginary part.
+  const isScalar = (v: any) => typeof v === 'number' || typeof v === 'boolean'
+    || (typeof v?.re === 'number' && typeof v?.im === 'number');
+  if (xs.every(isScalar)) return valueLib.asValue(xs);
   // Nested-vector path (`vector(V1, V2, …)` where each Vi is itself
   // a Value or vector-like). When all elements share the same inner
   // shape, collapse into a flat shape-explicit Value with an
@@ -2005,14 +1933,8 @@ function _ensureAtomBatchedRegistered(): void {
 
   // Complex counterpart — per-atom complex matmul over [N, m, n] ×
   // [N, n, p]. Routes through _cxMatBatchedMatMul (planar re/im).
-  // The per-arg dtype matcher is strict: this variant fires only when
-  // BOTH operands are complex Values. A mixed real × complex pair
-  // matches NEITHER this variant nor the real one — dispatch throws
-  // "no variant matched" and the batched-aggregate harness catches it
-  // as fall-through to the generic lowering (correct, just not
-  // vectorised). An either-operand dtype pattern form would close
-  // that; it's the concrete motivation noted in the TODO's
-  // complex-mul migration item.
+  // The registry matches two complex operands. The sampler's mulN
+  // dispatch also sends mixed operands to this kernel.
   ops.registerVariant('mul', {
     argPatterns: [
       { rank: 2, dtype: 'complex' },
