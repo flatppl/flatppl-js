@@ -40,13 +40,6 @@ test('a complex vector from a complex matrix keeps both parts', async () => {
     { dtype: 'complex', shape: undefined, re: [1, 5], im: [4, -2] });
 });
 
-test('lower_cholesky of a complex matrix refuses and so does what reads it', async () => {
-  const { ctx } = ctxFor(`M = ${M}\nd = lower_cholesky(M * adjoint(M))\ne = record(a = d)\n`, 1);
-  const why = /statically invalid at 2:\d+: lower_cholesky: arg 1 expects 2d array of real, got 2d array of complex/;
-  await assert.rejects(ctx.getMeasure('d'), why);
-  await assert.rejects(ctx.getMeasure('e'), why);
-});
-
 test('det(M) + 1.0 keeps the determinant of a complex matrix', async () => {
   const { ctx } = ctxFor(`M = ${M}\ne = det(M) + 1.0\n`, 1);
   const result = await ctx.getMeasure('e');

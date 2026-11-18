@@ -380,7 +380,7 @@ const _logabsdetBatchedLogical = (args: any[], N: number): any =>
 const _invBatchedLogical = (args: any[], N: number): any =>
   valueLib.isComplexValue(args[0]) ? null : _invBatched(_logicalStackArgs(args), N);
 const _lowerCholeskyBatchedLogical = (args: any[], N: number): any =>
-  _lowerCholeskyBatchedOrFallback(_logicalStackArgs(args), N);
+  valueLib.isComplexValue(args[0]) ? null : _lowerCholeskyBatchedOrFallback(_logicalStackArgs(args), N);
 const _rowGramBatchedLogical = (args: any[], N: number): any =>
   valueLib.isComplexValue(args[0]) ? null : _rowGramBatched(_logicalStackArgs(args), N);
 const _colGramBatchedLogical = (args: any[], N: number): any =>
@@ -717,7 +717,7 @@ ops.register({
 });
 
 // =====================================================================
-// lower_cholesky(A) — lower-triangular L with A = L Lᵀ (PD A)
+// lower_cholesky(A) — lower-triangular L with A = L L† (PD A).
 // =====================================================================
 //
 // Phase 2 migration. Diag-stored PD A: L = √diag (still diagonal,
@@ -799,11 +799,7 @@ function _lowerCholeskyBatchedOrFallback(args: any[], N: number): any {
 
 ops.register({
   name: 'lower_cholesky',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(2, 2),
   argRanks: [2],
   logical: _lowerCholeskyLogical,
   batched: _lowerCholeskyBatchedLogical,

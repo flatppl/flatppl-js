@@ -1144,9 +1144,9 @@ const SIGNATURE_FACTORIES = {
                            result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
   linsolve:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX), tvar('B')],
                            kwargs: {}, result: tvar('B'), complexResult: true }),
-  lower_cholesky: () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+  lower_cholesky: () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+                           result: array(2, ['%dynamic', '%dynamic'], REAL), complexResult: true }),
   // qr(A) → record(Q, R): Q is m×n, R is n×n (spec §07 "Linear algebra").
   qr:             () => ({ args: [array(2, ['%dynamic', '%dynamic'], COMPLEX)],
                            kwargs: {},
