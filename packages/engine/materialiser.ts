@@ -2054,6 +2054,42 @@ function _isLeafDistributionDeriv(d: any): boolean {
       || require('./regression.ts').NAMES.has(d.distIR.op)));
 }
 
+// The composite sampler materialises its source as empirical atoms. A
+// bayesupdate supplies weighted or correlated particles, including when a
+// lawof, kernel or field projection hides the original posterior draw.
+function usesPosteriorDraws(name: string, ctx: any): boolean {
+  const { forEachIRChild } = require('./ir-walk.ts');
+
+  function binding(source: string, seen: Set<string>): boolean {
+    if (seen.has(source)) return false;
+    seen.add(source);
+    if (ctx.derivations?.[source]?.kind === 'bayesupdate') return true;
+    return visit(ctx.bindings?.get(source)?.ir, seen);
+  }
+
+  function visit(ir: any, seen: Set<string>): boolean {
+    if (!ir) return false;
+    if (ir.kind === 'ref') return ir.ns === 'self' && binding(ir.name, seen);
+    if (ir.op === 'bayesupdate') return true;
+    // These queries consume a measure as a value. Only a stochastic
+    // evaluation point can supply a draw to the surrounding expression.
+    if (['totalmass', 'logtotalmass', 'densityof', 'logdensityof'].includes(ir.op)) {
+      return (ir.args || []).slice(1).some((arg: any) => visit(arg, seen));
+    }
+    if (ir.paramSources && ir.body) {
+      const local = new Set(seen);
+      for (const p of ir.paramSources) if (p.kind === 'binding') local.add(p.name);
+      return visit(ir.body, local);
+    }
+    if (ir.target?.ns === 'self' && binding(ir.target.name, seen)) return true;
+    let found = false;
+    forEachIRChild(ir, (child: any) => { if (!found) found = visit(child, seen); });
+    return found;
+  }
+
+  return binding(name, new Set());
+}
+
 function matRandSample(name: string, d: any, ctx: any) {
   // Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand);
   // classifier: derivations.classifyRandSample). `samples, _ =
@@ -2098,6 +2134,9 @@ function matRandSample(name: string, d: any, ctx: any) {
   // rebuild a few lines down silently drops them — the same silent
   // wrong-answer defect `walkWeightedRefuse` closes, one binding shape away.
   const fromDeriv = ctx.derivations && ctx.derivations[d.from];
+  if (usesPosteriorDraws(d.from, ctx)) {
+    throw new Error("rand: 'bayesupdate' needs an exact normalized posterior sampler");
+  }
   if (fromDeriv && fromDeriv.kind === 'weighted') {
     // A constant-weight `weighted`/`logweighted` collapses to the same
     // `{kind:'weighted', logShift}` derivation with no `isLog` field
