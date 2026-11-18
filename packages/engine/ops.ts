@@ -981,7 +981,8 @@ function _stackPerAtom(perAtomResults: any[], N: number): any {
   const out = new Float64Array(N * tailLen);
   const outIm = isComplex ? new Float64Array(N * tailLen) : null;
   for (let i = 0; i < N; i++) {
-    const r = perAtomResults[i];
+    const atom = perAtomResults[i];
+    const r = valueLib.isDiagStored(atom) ? valueLib.densify(atom) : atom;
     if (valueLib.isValue(r)) {
       const base = i * tailLen;
       // Flatten the per-atom Value's data into the output buffer.
@@ -1169,14 +1170,17 @@ function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   }
   // Atom-batched. Try the fast-path first.
   if (decl.batched) {
-    return decl.batched(args, N);
+    const result = decl.batched(args, N);
+    if (result !== null) return result;
   }
+  // Resolve tagged views before slicing the leading atom axis.
+  const logicalArgs = args.map((arg, i) => batchedFlags[i] ? valueLib._logicalDense(arg) : arg);
   // Per-atom fallback.
   const perAtom: any[] = new Array(N);
   for (let i = 0; i < N; i++) {
     const sliced = new Array(args.length);
     for (let k = 0; k < args.length; k++) {
-      sliced[k] = _argAtAtom(args[k], batchedFlags[k], i);
+      sliced[k] = _argAtAtom(logicalArgs[k], batchedFlags[k], i);
     }
     perAtom[i] = decl.logical(...sliced);
   }

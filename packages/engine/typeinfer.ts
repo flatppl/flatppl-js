@@ -1208,6 +1208,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const positionOf: Record<string, number> = {};
     let tvectorIn: any = null;
+    let complexResult = false;
     // Positional arguments bind a distribution's §08 parameters in declared
     // order (spec §04 "Calling conventions"), so check them as those kwargs.
     // A lone record or table auto-splats instead, or for a one-parameter
@@ -1260,6 +1261,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           // and these §07 rows note nothing. A scan keeps the transposition.
           const asVector = VECTOR_DOMAIN_OPS.has(op) && at && at.kind === 'tvector';
           if (asVector) tvectorIn = at.length;
+          if (sig.complexResult && at.elem?.prim === 'complex') complexResult = true;
           const next = T.unify(sig.args[i], asVector ? T.array(1, [at.length], at.elem) : at, s);
           if (next == null) {
             // Apply the substitution accumulated from earlier args so
@@ -1297,6 +1299,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       s = next;
     }
     let result = T.substitute(sig.result, s);
+    if (complexResult) {
+      result = result.kind === 'array'
+        ? T.array(result.rank, result.shape, T.COMPLEX)
+        : T.COMPLEX;
+    }
     if (require('./regression.ts').NAMES.has(op) && result.kind === 'measure') {
       const x = kwargs.x || args[0];
       const xt = x && inferExpr(x, scopes);

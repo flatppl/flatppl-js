@@ -40,13 +40,13 @@ test('a complex vector from a complex matrix keeps both parts', async () => {
     { dtype: 'complex', shape: undefined, re: [1, 5], im: [4, -2] });
 });
 
-// det, trace, inv, logabsdet, diag and lower_cholesky take a real matrix, so a
+// det, inv, logabsdet and lower_cholesky take a real matrix, so a
 // complex one is a static error. Their real-only kernels would still read the
 // real part and return a plausible number (det(M) as 1, so `det(M) + 1.0` as 2
 // against the true 4 − 2i), so the binding and everything that reads it refuse.
 for (const [name, expr] of [
-  ['det', 'det(M)'], ['trace', 'trace(M)'], ['inv', 'inv(M)'], ['logabsdet', 'logabsdet(M)'],
-  ['diag', 'diag(M)'], ['lower_cholesky', 'lower_cholesky(M * adjoint(M))'],
+  ['det', 'det(M)'], ['inv', 'inv(M)'], ['logabsdet', 'logabsdet(M)'],
+  ['lower_cholesky', 'lower_cholesky(M * adjoint(M))'],
 ]) {
   test(`${name} of a complex matrix refuses, and so does what reads it`, async () => {
     const { ctx } = ctxFor(`M = ${M}\nd = ${expr}\ne = record(a = d)\n`, 1);

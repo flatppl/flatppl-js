@@ -1129,10 +1129,12 @@ const ARITH_OPS = {
   // the rank-2 × rank-1 atom-aware variant and the dot folds via
   // the elementwise + sum pair).
   quadform:       (A: any, x: any): any => {
-    valueLib.requireMatrix(valueLib.asValue(A), 'quadform');
-    const Ax = valueOps.mul(valueLib.asValue(A), valueLib.asValue(x));
-    // dot(x, Ax) = sum(x ⊙ Ax).
-    const elem = valueOps.mulElem(valueLib.asValue(x), Ax);
+    const matrix = valueLib.asValue(A);
+    const vector = valueLib.asValue(x);
+    valueLib.requireMatrix(matrix, 'quadform');
+    const Ax = valueOps.mul(matrix, vector);
+    if (valueLib.isComplexValue(Ax)) return valueOps.mul(valueLib.adjoint(vector), Ax);
+    const elem = valueOps.mulElem(vector, Ax);
     // Reduce to scalar — sum over all dims (rank-1 input has only
     // one).
     const data = elem.data;
@@ -1700,10 +1702,13 @@ const ARITH_OPS = {
     const jStart = kk > 0 ?  kk : 0;
     const len = Math.max(0, Math.min(m - iStart, n - jStart));
     const out = new Float64Array(len);
+    const im = valueLib.isComplexValue(aV) ? new Float64Array(len) : null;
     for (let t = 0; t < len; t++) {
-      out[t] = aV.data[(iStart + t) * n + (jStart + t)];
+      const index = (iStart + t) * n + jStart + t;
+      out[t] = aV.data[index];
+      if (im) im[t] = aV.im[index];
     }
-    return { shape: [len], data: out };
+    return im ? valueLib.complexValue(out, im, [len]) : { shape: [len], data: out };
   },
   // addaxes(A, n_leading, n_trailing) — reshape A by inserting
   // n_leading singular (size-1) axes before A's axes and n_trailing
