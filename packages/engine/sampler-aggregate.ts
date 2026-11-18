@@ -204,7 +204,9 @@ function _evalAggregate(ir: any, env: any): any {
   if (perfConfig.getOptimization('aggregate')) {
     for (const p of AGGREGATE_PATTERNS) {
       const m = p.match(ir, env);
-      if (m) return _nestedToValueSP(p.execute(ir, env, m));
+      if (!m) continue;
+      const result = p.execute(ir, env, m);
+      if (result !== null) return _nestedToValueSP(result);
     }
   }
   return _evalAggregateBroadcastReduce(ir, env);
@@ -586,6 +588,7 @@ AGGREGATE_PATTERNS.push({
   execute(_ir: any, env: any, match: any): any {
     const src = evaluateExpr(match.srcIR, env);
     const flat = _toFlat(src);
+    if (flat.im) return null;
     const sourceShape = flat.shape;
     const sourceStrides = _rowMajorStrides(sourceShape);
 
@@ -775,10 +778,10 @@ function _broadcastStrides(srcShape: number[], outShape: number[]): number[] {
   return out;
 }
 
-// Convert a nested-array (or 1-D typed array) value to {data, shape}.
-// Nested → flat: walk in row-major order. Typed-array → wraps as
-// shape=[length]. Scalar → shape=[].
-function _toFlat(val: any): { data: Float64Array; shape: number[] } {
+type AggregateTensor = { data: Float64Array; shape: number[]; im?: Float64Array };
+
+// Resolve views before aligning either plane of a complex value.
+function _toFlat(val: any): AggregateTensor {
   if (val == null) return { data: new Float64Array([0]), shape: [] };
   if (typeof val === 'number' || typeof val === 'boolean') {
     return { data: new Float64Array([+val]), shape: [] };
@@ -787,31 +790,9 @@ function _toFlat(val: any): { data: Float64Array; shape: number[] } {
     // Typed array — 1-D.
     return { data: val as Float64Array, shape: [val.length] };
   }
-  if (Array.isArray(val)) {
-    // Determine shape by walking the first element down.
-    const shape: number[] = [val.length];
-    let probe: any = val[0];
-    while (Array.isArray(probe)
-           || (probe && probe.BYTES_PER_ELEMENT !== undefined)) {
-      shape.push(probe.length);
-      probe = probe[0];
-    }
-    const size = _shapeProd(shape);
-    const data = new Float64Array(size);
-    let w = 0;
-    function fill(x: any) {
-      if (Array.isArray(x) || (x && x.BYTES_PER_ELEMENT !== undefined)) {
-        for (let i = 0; i < x.length; i++) fill(x[i]);
-      } else {
-        data[w++] = +x;
-      }
-    }
-    fill(val);
-    return { data, shape };
-  }
-  if (valueLib.isValue(val)) {
-    const dense = valueLib._logicalDense(val);
-    return { data: dense.data as Float64Array, shape: dense.shape.slice() };
+  if (Array.isArray(val) || valueLib.isValue(val) || typeof val?.re === 'number' && typeof val.im === 'number') {
+    const dense = valueLib._logicalDense(valueLib.asValue(val));
+    return { data: dense.data, shape: dense.shape.slice(), im: dense.im };
   }
   throw new Error(`aggregate: cannot interpret value of type ${typeof val} as a tensor`);
 }
@@ -869,6 +850,14 @@ function _nestedToValueSP(r: any): any {
 function _flatToValueSP(data: Float64Array, shape: number[]): any {
   if (shape.length >= 2) return { shape: shape.slice(), data };
   return _flatToNested(data, shape);
+}
+
+function _aggregateOutput(tensor: AggregateTensor, isBatched: boolean): any {
+  const { data, shape, im } = tensor;
+  if (im) {
+    return shape.length === 0 ? { re: data[0], im: im[0] } : valueLib.complexValue(data, im, shape);
+  }
+  return isBatched ? { shape, data } : _flatToValueSP(data, shape);
 }
 
 // True if `node` (an IR subtree) contains any `kind: 'axis'` node.
@@ -934,7 +923,7 @@ function _alignedTensorFromGet(
   getIR: any, canonicalAxes: string[],
   axisLengths: Record<string, number>, env: any,
   atomCfg: AtomConfig,
-): { data: Float64Array; shape: number[] } {
+): AggregateTensor {
   const args = getIR.args || [];
   const oneBased = getIR.op === 'get';
   const containerIR = args[0];
@@ -1031,14 +1020,20 @@ function _alignedTensorFromGet(
     }
   }
 
-  // Materialise the aligned tensor. Rank-specific fast paths (0-3)
+  const data = _gatherAlignedPlane(src.data, alignedShape, sourceStrideAt, baseOffset);
+  const im = src.im && _gatherAlignedPlane(src.im, alignedShape, sourceStrideAt, baseOffset);
+  return { data, shape: alignedShape, im };
+}
+
+function _gatherAlignedPlane(srcData: Float64Array, alignedShape: number[],
+  sourceStrideAt: number[], baseOffset: number): Float64Array {
+  // Materialise the aligned plane. Rank-specific fast paths (0-3)
   // beat the generic coord-walker by ~10× because V8 JITs the
   // nested-loop form much better than the per-element coord-stride
   // recomputation. Rank 3 is the hot case for fusion (a) Step 2's
   // canonical output (atom × outer × reduce axes).
-  const alignedSize = _shapeProd(alignedShape);
+  const M = alignedShape.length, alignedSize = _shapeProd(alignedShape);
   const out = new Float64Array(alignedSize);
-  const srcData = src.data;
   if (M === 3) {
     const D0 = alignedShape[0], D1 = alignedShape[1], D2 = alignedShape[2];
     const S0 = sourceStrideAt[0], S1 = sourceStrideAt[1], S2 = sourceStrideAt[2];
@@ -1052,7 +1047,7 @@ function _alignedTensorFromGet(
         }
       }
     }
-    return { data: out, shape: alignedShape };
+    return out;
   }
   if (M === 2) {
     const D0 = alignedShape[0], D1 = alignedShape[1];
@@ -1064,16 +1059,16 @@ function _alignedTensorFromGet(
         out[idx++] = srcData[off0 + i1 * S1];
       }
     }
-    return { data: out, shape: alignedShape };
+    return out;
   }
   if (M === 1) {
     const D0 = alignedShape[0], S0 = sourceStrideAt[0];
     for (let i0 = 0; i0 < D0; i0++) out[i0] = srcData[baseOffset + i0 * S0];
-    return { data: out, shape: alignedShape };
+    return out;
   }
   if (M === 0) {
     out[0] = srcData[baseOffset];
-    return { data: out, shape: alignedShape };
+    return out;
   }
   // Generic coord-walker for rank ≥4.
   const coord = new Array(M).fill(0);
@@ -1088,7 +1083,7 @@ function _alignedTensorFromGet(
       coord[i] = 0;
     }
   }
-  return { data: out, shape: alignedShape };
+  return out;
 }
 
 // Inline scalar implementations for the most common binary ops in
@@ -1249,6 +1244,27 @@ function _broadcastUnary(
   return { data: out, shape: a.shape.slice() };
 }
 
+// The complex path uses the ordinary scalar operators and their branch
+// conventions. Keep the real aggregate loops on their existing fast paths.
+function _broadcastComplex(op: string, args: AggregateTensor[]): AggregateTensor {
+  const shape = args[0].shape.map((_, i) => Math.max(...args.map(a => a.shape[i])));
+  const full = args.map(a => _broadcastTo(a, shape));
+  const data = new Float64Array(_shapeProd(shape));
+  let im = op === 'ifelse' || op === 'complex' || op === 'cis' ? new Float64Array(data.length) : undefined;
+  const apply = ARITH_OPS[op];
+  for (let i = 0; i < data.length; i++) {
+    const result = apply(...full.map(a => a.im ? { re: a.data[i], im: a.im[i] } : a.data[i]));
+    if (typeof result?.re === 'number' && typeof result.im === 'number') {
+      im ??= new Float64Array(data.length);
+      data[i] = result.re;
+      im[i] = result.im;
+    } else {
+      data[i] = +result;
+    }
+  }
+  return { data, shape, im };
+}
+
 // Lift an expression IR subtree to an aligned tensor of canonical
 // shape. Each leaf becomes either a scalar (axis-free subtree) or an
 // aligned tensor (a `get` call); each interior arithmetic op becomes
@@ -1264,7 +1280,7 @@ function _broadcastUnary(
 // arguments). A name whose value varies over an axis or an atom is an
 // aligned tensor. Any other is one value, passed to a constant subtree as a
 // literal assign.
-type LiftLets = { tensors: Map<string, { data: Float64Array; shape: number[] }>; consts: any[] };
+type LiftLets = { tensors: Map<string, AggregateTensor>; consts: any[] };
 
 function _readsTensorLet(node: any, lets: LiftLets | undefined): boolean {
   if (!lets || lets.tensors.size === 0) return false;
@@ -1286,7 +1302,7 @@ function _liftAggregateExpr(
   atomCfg: AtomConfig,
   axisRefs?: WeakMap<object, boolean>,
   lets?: LiftLets,
-): { data: Float64Array; shape: number[] } {
+): AggregateTensor {
   if (lets && node.kind === 'ref' && lets.tensors.has(node.name)) return lets.tensors.get(node.name)!;
   // Constant-hoist: subtree with no axis refs evaluates once.
   if (!_containsAxisRef(node, axisRefs) && !_readsTensorLet(node, lets)) {
@@ -1327,24 +1343,24 @@ function _liftAggregateExpr(
   // Binary arithmetic: lift both operands, broadcast-apply.
   if (node.kind === 'call' && node.args && node.args.length === 2) {
     const fn = _AGG_BIN[node.op];
-    if (fn) {
+    if (fn || node.op === 'complex') {
       const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets);
       const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets);
-      return _broadcastBinary(a, b, fn);
+      return a.im || b.im || !fn ? _broadcastComplex(node.op, [a, b]) : _broadcastBinary(a, b, fn);
     }
   }
   // §07 ifelse is elementwise: select a or b per cell by the condition.
   if (node.kind === 'call' && node.op === 'ifelse' && node.args?.length === 3) {
     const [c, a, b] = node.args.map((arg: any) =>
       _liftAggregateExpr(arg, canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets));
-    return _broadcastSelect(c, a, b);
+    return a.im || b.im ? _broadcastComplex(node.op, [c, a, b]) : _broadcastSelect(c, a, b);
   }
   // Unary scalar math.
   if (node.kind === 'call' && node.args && node.args.length === 1) {
     const fn = _AGG_UN[node.op];
-    if (fn) {
+    if (fn || ['complex', 'real', 'imag', 'conj', 'cis'].includes(node.op)) {
       const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs, lets);
-      return _broadcastUnary(a, fn);
+      return a.im || !fn ? _broadcastComplex(node.op, [a]) : _broadcastUnary(a, fn);
     }
   }
   throw new Error(`aggregate: unsupported op '${node.op || node.kind}' `
@@ -1368,26 +1384,19 @@ function _readsAtomBatched(node: any, names: Set<string>): boolean {
 
 function _alignedConstTensor(
   v: any, node: any, canonicalAxes: string[], atomCfg: AtomConfig,
-): { data: Float64Array; shape: number[] } {
+): AggregateTensor {
   const shape = canonicalAxes.map(() => 1);
   if (atomCfg) {
     if (_readsAtomBatched(node, atomCfg.atomBatchedNames)) {
-      let perAtom: Float64Array | null = null;
-      if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === atomCfg.N) {
-        perAtom = v as Float64Array;
-      } else if (v && Array.isArray(v.shape) && v.shape.length === 1
-                 && v.shape[0] === atomCfg.N) {
-        perAtom = v.data as Float64Array;
-      }
-      if (perAtom) {
+      if (valueLib.isAtomBatchedScalar(v, atomCfg.N)) {
         // Atom axis is always at position 0 in atom-batched canonical
         // ordering (the evaluator prepends atomAxis to user axes).
         shape[0] = atomCfg.N;
-        return { data: perAtom, shape };
+        return { ..._toFlat(v), shape };
       }
     }
   }
-  return { data: new Float64Array([+v]), shape };
+  return { ..._toFlat(v), shape };
 }
 
 // =====================================================================
@@ -1516,9 +1525,7 @@ function _evalAggregateGeneric(
   // No-reduction short-circuit: the output IS the lifted tensor
   // (with any singleton dims broadcast to their full length).
   if (reduceAxes.length === 0) {
-    const full = _broadcastTo(lifted, outShape);
-    if (isBatched) return { shape: outShape, data: full.data };
-    return _flatToValueSP(full.data, outShape);
+    return _aggregateOutput(_broadcastTo(lifted, outShape), isBatched);
   }
 
   // Stretch any remaining singletons to their full length, then
@@ -1528,6 +1535,22 @@ function _evalAggregateGeneric(
   const reduceSize = _shapeProd(reduceShape);
   const outData = new Float64Array(outSize);
   const fdata = full.data;
+  if (full.im) {
+    if (fname !== 'sum' && fname !== 'mean' && fname !== 'prod') {
+      throw new Error(`${tag}: reduction '${fname}' does not accept complex values`);
+    }
+    const outIm = new Float64Array(outSize);
+    const cellShape = [reduceSize];
+    const reduceComplex = ARITH_OPS[fname];
+    for (let i = 0; i < outSize; i++) {
+      const start = i * reduceSize, end = start + reduceSize;
+      const cell = valueLib.complexValue(fdata.subarray(start, end), full.im.subarray(start, end), cellShape);
+      const result = reduceComplex(cell);
+      outData[i] = result.re;
+      outIm[i] = result.im;
+    }
+    return _aggregateOutput({ data: outData, shape: outShape, im: outIm }, isBatched);
+  }
   // Fast paths for sum / mean / prod: tight inline reduce loops
   // (no tmp-copy + no per-cell function call). The generic path
   // (tmp + _applyAggregateReduction) handles var / std / min / max
@@ -1643,32 +1666,17 @@ function _tryBatchedAggregatePatterns(
 // Materialise a singleton-broadcast tensor to its full shape — copy
 // data so every dim equals its target length. After this the data
 // buffer is contiguous in row-major order over `targetShape`.
-function _broadcastTo(
-  t: { data: Float64Array; shape: number[] },
-  targetShape: number[],
-): { data: Float64Array; shape: number[] } {
+function _broadcastTo(t: AggregateTensor, targetShape: number[]): AggregateTensor {
   // Fast path: already at target shape.
   let same = true;
   for (let i = 0; i < targetShape.length; i++) {
     if (t.shape[i] !== targetShape[i]) { same = false; break; }
   }
   if (same) return t;
-  const N = targetShape.length;
-  const outSize = _shapeProd(targetShape);
   const srcStrides = _broadcastStrides(t.shape, targetShape);
-  const out = new Float64Array(outSize);
-  const coord = new Array(N).fill(0);
-  for (let linear = 0; linear < outSize; linear++) {
-    let srcOff = 0;
-    for (let i = 0; i < N; i++) srcOff += coord[i] * srcStrides[i];
-    out[linear] = t.data[srcOff];
-    for (let i = N - 1; i >= 0; i--) {
-      coord[i]++;
-      if (coord[i] < targetShape[i]) break;
-      coord[i] = 0;
-    }
-  }
-  return { data: out, shape: targetShape.slice() };
+  const data = _gatherAlignedPlane(t.data, targetShape, srcStrides, 0);
+  const im = t.im && _gatherAlignedPlane(t.im, targetShape, srcStrides, 0);
+  return { data, shape: targetShape.slice(), im };
 }
 
 // =====================================================================
