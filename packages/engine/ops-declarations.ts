@@ -373,9 +373,12 @@ function _logicalStackArgs(args: any[]): any[] {
 
 // One wrapper per kernel, each with its own direct call, so the kernels stay
 // monomorphic call targets instead of sharing one closure.
-const _detBatchedLogical = (args: any[], N: number): any => _detBatched(_logicalStackArgs(args), N);
-const _logabsdetBatchedLogical = (args: any[], N: number): any => _logabsdetBatched(_logicalStackArgs(args), N);
-const _invBatchedLogical = (args: any[], N: number): any => _invBatchedOrFallback(_logicalStackArgs(args), N);
+const _detBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _detBatched(_logicalStackArgs(args), N);
+const _logabsdetBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _logabsdetBatched(_logicalStackArgs(args), N);
+const _invBatchedLogical = (args: any[], N: number): any =>
+  valueLib.isComplexValue(args[0]) ? null : _invBatched(_logicalStackArgs(args), N);
 const _lowerCholeskyBatchedLogical = (args: any[], N: number): any =>
   _lowerCholeskyBatchedOrFallback(_logicalStackArgs(args), N);
 const _rowGramBatchedLogical = (args: any[], N: number): any =>
@@ -436,6 +439,10 @@ ops.register({
 
 function _detLogical(A: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'det');
+  if (valueLib.isComplexValue(A)) {
+    const lu = require('./complex-lu.ts');
+    return lu.determinant(A);
+  }
   if (valueLib.isDiagStored(A) && !A.im) {
     let p = 1; for (let i = 0; i < A.data.length; i++) p *= A.data[i];
     return valueLib.scalar(p);
@@ -475,11 +482,7 @@ function _detBatched(args: any[], N: number): any {
 
 ops.register({
   name: 'det',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _REAL,
-  },
+  signature: _numericMatrixSignature(2, 0),
   argRanks: [2],
   logical: _detLogical,
   batched: _detBatchedLogical,
@@ -491,6 +494,10 @@ ops.register({
 
 function _logabsdetLogical(A: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'logabsdet');
+  if (valueLib.isComplexValue(A)) {
+    const lu = require('./complex-lu.ts');
+    return valueLib.scalar(lu.logAbsDeterminant(A));
+  }
   if (valueLib.isDiagStored(A) && !A.im) {
     let s = 0;
     for (let i = 0; i < A.data.length; i++) s += Math.log(Math.abs(A.data[i]));
@@ -527,7 +534,7 @@ function _logabsdetBatched(args: any[], N: number): any {
 ops.register({
   name: 'logabsdet',
   signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
+    args: [_array(2, ['%dynamic', '%dynamic'], _COMPLEX)],
     kwargs: {},
     result: _REAL,
   },
@@ -545,6 +552,10 @@ ops.register({
 
 function _invLogical(A: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'inv');
+  if (valueLib.isComplexValue(A)) {
+    const lu = require('./complex-lu.ts');
+    return lu.inverse(A);
+  }
   if (valueLib.isDiagStored(A) && !A.im) {
     const d = new Float64Array(A.data.length);
     for (let i = 0; i < d.length; i++) {
@@ -591,46 +602,9 @@ function _invBatched(args: any[], N: number): any {
   return { shape: [N, n, n], data: out };
 }
 
-function _invBatchedOrFallback(args: any[], N: number): any {
-  const fast = _invBatched(args, N);
-  if (fast !== null) return fast;
-  // Per-atom fallback inline (diag-stored Values, complex, anything
-  // non-batched-Value).
-  const perAtom: any[] = new Array(N);
-  const A = args[0];
-  for (let i = 0; i < N; i++) {
-    let atomA: any = A;
-    if (valueLib.isAtomBatched(A, N) && A.shape.length === 3) {
-      const stride = A.shape[1] * A.shape[2];
-      const subData = A.data.subarray(i * stride, (i + 1) * stride);
-      atomA = { shape: [A.shape[1], A.shape[2]], data: subData };
-    }
-    perAtom[i] = _invLogical(atomA);
-  }
-  // All results should be matrices of consistent shape; densify any
-  // diag-stored entries (rare, but possible if diag fast-path fired
-  // per atom) before stacking.
-  const tailShape = valueLib.isValue(perAtom[0])
-    ? valueLib.densify(perAtom[0]).shape
-    : [perAtom[0].length, perAtom[0][0].length];
-  const tailLen = tailShape.reduce((a: number, b: number) => a * b, 1);
-  const out = new Float64Array(N * tailLen);
-  for (let i = 0; i < N; i++) {
-    const d = valueLib.isValue(perAtom[i])
-      ? valueLib.densify(perAtom[i]).data
-      : perAtom[i];
-    out.set(d, i * tailLen);
-  }
-  return { shape: [N, ...tailShape], data: out };
-}
-
 ops.register({
   name: 'inv',
-  signature: {
-    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
-    kwargs: {},
-    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
-  },
+  signature: _numericMatrixSignature(2, 2),
   argRanks: [2],
   logical: _invLogical,
   batched: _invBatchedLogical,
@@ -974,7 +948,7 @@ ops.register({
 // Otherwise: LU + back-substitution.
 function _linsolveLogical(A: any, b: any): any {
   if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'linsolve');
-  if (valueLib.isDiagStored(A) && !A.im) {
+  if (valueLib.isDiagStored(A) && !A.im && !valueLib.isComplexValue(b)) {
     const d = A.data, m = d.length;
     const bv = valueLib.isValue(b) ? b : null;
     const bd = bv ? bv.data : b;
@@ -988,8 +962,10 @@ function _linsolveLogical(A: any, b: any): any {
     }
   }
   if (valueLib.isValue(A) || valueLib.isValue(b)) {
-    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
-    const bV = valueLib.isValue(b) ? valueLib.densify(b) : valueLib.asValue(b);
+    const aV = valueLib.asValue(A), bV = valueLib.asValue(b);
+    if (valueLib.isComplexValue(aV) || valueLib.isComplexValue(bV)) {
+      return require('./complex-lu.ts').solve(aV, bV);
+    }
     return linalg._linsolveLUValue(aV, bV);
   }
   if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {

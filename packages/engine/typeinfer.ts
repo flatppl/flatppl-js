@@ -1300,9 +1300,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     let result = T.substitute(sig.result, s);
     if (complexResult) {
-      result = result.kind === 'array'
-        ? T.array(result.rank, result.shape, T.COMPLEX)
-        : T.COMPLEX;
+      if (result.kind === 'array') result = T.array(result.rank, result.shape, T.COMPLEX);
+      else if (result.kind === 'scalar') result = T.COMPLEX;
     }
     if (require('./regression.ts').NAMES.has(op) && result.kind === 'measure') {
       const x = kwargs.x || args[0];
