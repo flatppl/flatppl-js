@@ -200,7 +200,7 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   ctx.fillValuesets();
   ctx.fillMasses();
   // §04 draw and measure reification require normalized sources.
-  ctx.checkDrawMass();
+  ctx.checkSamplingMass();
   ctx.checkLawofMass();
   // Consumer of the valueset domain: flag distribution parameters whose
   // value set is PROVABLY outside the parameter's required domain (spec
@@ -7877,23 +7877,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   // ===================================================================
-  // The `draw` total-mass gate (spec §04 "Reification")
+  // The draw and rand total-mass gate (spec §04 and §07)
   // ===================================================================
   //
   // Reject unnormalized sources. An unresolved mass remains deferred; a known unknown
   // class does not grant permission. The parser rewrites tilde to draw.
-  function checkDrawMass() {
+  function checkSamplingMass() {
     const irWalk = require('./ir-walk.ts');
     const visit = (ir: any) => {
       if (!ir || typeof ir !== 'object') return;
-      if (ir.kind === 'call' && ir.op === 'draw') {
+      if (ir.kind === 'call' && (ir.op === 'draw' || ir.op === 'rand')) {
         const arg = (ir.args || [])[0];
         const offending = unprovableNormalization(arg);
         if (offending) {
           diagnostics.push({ severity: 'error',
-            message: 'draw requires a probability measure, but this argument\'s total mass is ' + offending
-              + ' (spec §04). Wrap it in normalize(...) to state that intent '
-              + '— draw never normalizes its argument',
+            message: ir.op + " requires a probability measure, but this argument's total mass is " + offending
+              + (ir.op === 'draw' ? ' (spec §04).' : ' (spec §07).') + ' Wrap it in normalize(...) to state that intent '
+              + '— ' + ir.op + ' never normalizes its argument',
             loc: (arg && arg.loc) || ir.loc });
         }
       }
@@ -7961,7 +7961,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
   return { diagnostics, inferBinding, inferExpr, setValueType, fillValuesets, fillMasses, checkDomainContracts,
     checkModuleSubstitutionTypes,
-    checkPushfwdDomainContracts, checkCrossModuleReification, checkDrawMass,
+    checkPushfwdDomainContracts, checkCrossModuleReification, checkSamplingMass,
     checkLawofMass };
 }
 
