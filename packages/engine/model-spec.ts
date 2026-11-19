@@ -19,6 +19,7 @@ import type { IRNode } from './engine-types';
 
 const orchestrator = require('./orchestrator.ts');
 const transforms    = require('./transforms.ts');
+const { numel } = require('./value.ts');
 const density       = require('./density.ts');
 const clm           = require('./clm.ts');
 const { isEngineLimitation } = require('./limitations.ts');
@@ -356,15 +357,18 @@ function pushfwdImageSupport(fnBody: any, paramName: string, baseSupport: any): 
 // Support of a `Lebesgue(set)` measure given as IR, with the chart the sampler needs.
 function lebesgueSupportInfo(measureIR: any, ctx?: any): any {
   const support = require('./reference-support.ts');
-  const { resolveConstant } = require('./ir-shared.ts');
+  const { resolveConstant, resolveIRToValue } = require('./ir-shared.ts');
   const fixed = (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues);
   // Unknown interval bounds use real coordinates, preserving the shape of
   // surrounding products. The density still enforces the original bounds.
   const geometry = require('./ir-walk.ts').mapIR(require('./let-view.ts').topOf(support.supportArg(measureIR)), (n: any) =>
     n.op === 'interval' && n.args?.some((bound: any) => fixed(bound) == null)
       ? { kind: 'const', name: 'reals' } : n);
-  const resolved = support.resolveSupport(geometry, fixed,
-    (n: any) => ctx?.bindings.get(n.name)?.ir);
+  const resolved = support.resolveSupport(geometry, (n: any) => {
+    const scalar = fixed(n);
+    if (scalar != null) return scalar;
+    try { return resolveIRToValue(n, ctx?.bindings, ctx?.fixedValues, true); } catch (_) { return null; }
+  }, (n: any) => ctx?.bindings.get(n.name)?.ir);
   // Dependent bounds remain density constraints. A static chart must not
   // freeze them to a prior draw or another parameter point.
   return resolved ? support.transformSupport(resolved)
@@ -376,8 +380,7 @@ function lebesgueSupportInfo(measureIR: any, ctx?: any): any {
 // object { kind: 'real'|'positive'|'interval'|'greaterThan'|'lessThan', … } for
 // a scalar. `ctx` (optional) supplies bindings/fixedValues so a Uniform leaf's
 // interval bounds resolve AND enables the pushfwd-image-support derivation.
-function walkDerivChain(name: string, derivations: any, ctx?: any): any {
-  const visited = new Set<string>();
+function walkDerivChain(name: string, derivations: any, ctx?: any, visited = new Set<string>()): any {
   let cur: string = name;
   while (cur && !visited.has(cur)) {
     visited.add(cur);
@@ -385,6 +388,13 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (!d) return { kind: 'real' };
     if (d.kind === 'alias') { cur = d.from; continue; }
     if (d.kind === 'normalize') { cur = d.from; continue; }
+    if (d.kind === 'weighted') {
+      // Weighting preserves the complex reference coordinates of its base.
+      const chart = walkDerivChain(d.from, derivations, ctx, visited);
+      if (chart.kind === 'complex' || (chart.isIid
+          && walkDerivChain(chart.elementBaseName, derivations, ctx, visited).kind === 'complex')) return chart;
+      return { kind: 'real' };
+    }
     // §06 tilt(M, B) keeps B's reference measure. Its lifted base is a
     // measure binding, so reuse the same support walk as an ordinary draw.
     if (d.kind === 'tilt' && d.measureIR.args[1]?.kind === 'ref') {
@@ -652,7 +662,17 @@ function enumerateLatents(d: any, ctx: any): any[] {
       const dims: number[] = info.dims || [1];
       const totalDim = dims.reduce((a: number, b: number) => a * b, 1);
       const support = elementSupportOf(info.elementBaseName, derivations, ctx);
-      result.push({ name: latentName, measureName, shape: { kind: 'vector', dims: [totalDim] }, support });
+      const shape = support.kind === 'complex'
+        ? { kind: 'vector', dims: [totalDim * numel(support.atomShape)], atomShape: [...dims, ...support.atomShape] }
+        : { kind: 'vector', dims: [totalDim] };
+      result.push({ name: latentName, measureName, shape, support });
+      continue;
+    }
+
+    if (info?.kind === 'complex' && info.atomShape.length > 0) {
+      const atomShape = info.atomShape;
+      result.push({ name: latentName, measureName,
+        shape: { kind: 'vector', dims: [numel(atomShape)], atomShape }, support: info });
       continue;
     }
 

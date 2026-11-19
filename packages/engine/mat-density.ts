@@ -26,7 +26,7 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
-const { isValue } = require('./value.ts');
+const { isValue, complexValue } = require('./value.ts');
 const { logTotalMassExpr, positiveCountLogMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeDensity, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
@@ -493,8 +493,11 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any): Promise<any> {
         const pt: any = {};
         for (let li = 0; li < mv.latentNames.length; li++) {
           const nm = mv.latentNames[li], shp = mv.latentShapes[li];
-          if (shp.kind === 'scalar') { pt[nm] = post.drawsByName[nm][a]; }
-          else {
+          if (shp.complex) {
+            pt[nm] = mv.complexScorerValue(nm, (name: string) => post.drawsByName[name][a]);
+          } else if (shp.kind === 'scalar') {
+            pt[nm] = post.drawsByName[nm][a];
+          } else {
             const dd = shp.dims[0]; const v = new Float64Array(dd);
             for (let j = 0; j < dd; j++) v[j] = post.drawsByName[`${nm}[${j}]`][a];
             pt[nm] = v;
@@ -530,6 +533,20 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any): Promise<any> {
           am.logTotalmass = 0; am.n_eff = nDraws;
           return am;
         };
+        const buildComplex = (name: string, shape: any) => {
+          const width = shape.kind === 'scalar' ? 1 : shape.dims[0];
+          const re = new Float64Array(total * width), im = new Float64Array(total * width);
+          for (let j = 0; j < width; j++) {
+            const real = post.drawsByName[`${name}[${2 * j}]`];
+            const imag = post.drawsByName[`${name}[${2 * j + 1}]`];
+            for (let i = 0; i < total; i++) {
+              re[i * width + j] = real[idx[i]];
+              im[i * width + j] = imag[idx[i]];
+            }
+          }
+          return measureFromValue(complexValue(re, im, [total, ...(shape.atomShape || [])]),
+            { logWeights: null, logTotalmass: 0, n_eff: nDraws });
+        };
 
         if (parent && parent.fields) {
           // Build each prior-record field, resampled to `total`. A field that IS
@@ -546,7 +563,9 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any): Promise<any> {
           for (const fn of fieldNames) {
             const shp = latentShape[fn];
             if (!shp) { derivedFields.push(fn); continue; }
-            if (shp.kind === 'scalar') {
+            if (shp.complex) {
+              fields[fn] = buildComplex(fn, shp);
+            } else if (shp.kind === 'scalar') {
               fields[fn] = buildScalar(post.drawsByName[fn]);
             } else {
               const dlen = shp.dims[0];
@@ -597,7 +616,9 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any): Promise<any> {
         // measure. Scalar → scalar measure; vector → array measure.
         const nm = mv.latentNames[0], shp = mv.latentShapes[0];
         let m: any;
-        if (shp.kind === 'scalar') {
+        if (shp.complex) {
+          m = buildComplex(nm, shp);
+        } else if (shp.kind === 'scalar') {
           m = buildScalar(post.drawsByName[nm]);
         } else {
           const dlen = shp.dims[0];

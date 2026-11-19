@@ -1,5 +1,6 @@
 'use strict';
 const T = require('./transforms.ts');
+const values = require('./value.ts');
 
 // Closed-form prior log-densities for the continuous dists we transform.
 // (Mirrors density-prims; kept local so ModelView's prior term is independent
@@ -131,7 +132,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         } else if (l.shape.kind === 'vector' && l.shape.dims[0] > 0) {
           stride = l.shape.dims[0];
         }
-        pool = { samples: s, stride, n: Math.floor(s.length / stride) };
+        pool = { samples: s, imag: m.value?.im ?? m.imag, stride, n: Math.floor(s.length / stride) };
         if (drawPrior) weightParents.push(m);
         // Reconcile the latent's shape with the pool: a >1 per-atom size is a
         // vector latent of that width (fixes matrix/pool-sized latents that the
@@ -170,19 +171,28 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   const coordNames: string[]  = [];   // e.g. ['mu','tau','p[0]','p[1]','p[2]']
   const latentNames: string[] = [];   // unique latent names
   const latentShapes: any[]   = [];   // { kind:'scalar'|'vector', dims?:[d] }
+  const complexCharts = new Map<string, ReturnType<typeof T.complexTransform>>();
   let ydim = 0;
 
   for (const l of leafLatents) {
     latentNames.push(l.name);
-    latentShapes.push(l.shape);
-    const width = l.shape.kind === 'scalar' ? 1 : l.shape.dims[0];
     const kind = l.support && l.support.kind;
+    latentShapes.push(kind === 'complex' ? { ...l.shape, complex: true } : l.shape);
+    const width = l.shape.kind === 'scalar' ? 1 : l.shape.dims[0];
     if (kind === 'unsupported') {
       throw new Error(
         `backend '${(ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'mh'}': latent `
         + `'${l.name}' is a '${l.support.distOp}' draw, whose support has no unconstraining `
         + `transform in this engine; use backend 'is', which forward-samples the prior `
         + `rather than exploring an unconstrained space`);
+    }
+    if (kind === 'complex') {
+      const t = T.complexTransform(l.shape.atomShape ?? []);
+      complexCharts.set(l.name, t);
+      blocks.push({ kind, latent: l.name, yDim: 2 * width, y0: ydim, t });
+      for (let i = 0; i < 2 * width; i++) coordNames.push(`${l.name}[${i}]`);
+      ydim += 2 * width;
+      continue;
     }
     if (kind === 'simplex' || kind === 'ordered' || kind === 'zerosum') {
       const minWidth = kind === 'simplex' ? 2 : 1;
@@ -242,6 +252,15 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   // 4. Async setup: build logPi / logPiBatch / priorLikBatch / probePrior.
   const { logPi, logPiBatch, priorLikBatch, probePrior, probeLik, likOf } = await buildLogPi(ctx, posteriorDeriv);
 
+  function poolValueAt(l: any, pool: any, atom: number): any {
+    if (l.shape.kind === 'scalar') {
+      return pool.imag ? { re: pool.samples[atom], im: pool.imag[atom] } : pool.samples[atom];
+    }
+    const start = atom * pool.stride, end = start + pool.stride;
+    const sample = pool.samples.slice(start, end);
+    return pool.imag ? values.complexValue(sample, pool.imag.slice(start, end), l.shape.atomShape) : sample;
+  }
+
   // 4a. Prior-tractability probe. Build a probe point from every latent that HAS
   //     a pool (pool atom 0); latents without a pool are skipped individually but
   //     MUST NOT suppress the probe of their pooled siblings. probePrior iterates
@@ -258,12 +277,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
       const l = leafLatents[li], pool = priorPools[li];
       if (!pool) continue;
       anyPool = true;
-      if (l.shape.kind === 'scalar') { probePt[l.name] = pool.samples[0]; }
-      else {
-        const d = pool.stride; const v = new Float64Array(d);
-        for (let j = 0; j < d; j++) v[j] = pool.samples[j];
-        probePt[l.name] = v;
-      }
+      probePt[l.name] = poolValueAt(l, pool, 0);
     }
     if (anyPool) {
       try {
@@ -326,26 +340,26 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
       const scorerPt: Record<string, any> = {};
       for (let li = 0; li < leafLatents.length; li++) {
         const l = leafLatents[li], pool = priorPools[li];
-        if (l.shape.kind === 'vector') {
-          const d = pool.stride; const v = new Float64Array(d);
-          for (let j = 0; j < d; j++) v[j] = pool.samples[a * d + j];
-          scorerPt[l.name] = v;
-        } else {
-          scorerPt[l.name] = pool.samples[a];
-        }
+        scorerPt[l.name] = poolValueAt(l, pool, a);
       }
       out.push(unconstrainAll(scorerPt));
     }
     return out;
   }
 
-  // Helper: flat coord record → scorer-format record { name: scalar | Float64Array }.
-  function flatToScorerPt(flatPt: Record<string, any>): Record<string, any> {
+  function complexScorerValue(name: string, at: (coordinate: string) => number): any {
+    return complexCharts.get(name)!.constrain((i: number) => at(`${name}[${i}]`));
+  }
+
+  // Restore each latent's constrained value from its output streams.
+  function flatToScorerPt(flatPt: Record<string, number>): Record<string, any> {
     const rec: Record<string, any> = {};
     for (let li = 0; li < latentNames.length; li++) {
       const nm  = latentNames[li];
       const shp = latentShapes[li];
-      if (shp.kind === 'scalar') {
+      if (shp.complex) {
+        rec[nm] = complexScorerValue(nm, name => flatPt[name]);
+      } else if (shp.kind === 'scalar') {
         rec[nm] = flatPt[nm];
       } else {
         const d = shp.dims[0];
@@ -382,7 +396,9 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     const flat: Record<string, any> = {};
     for (let bi = 0; bi < blocks.length; bi++) {
       const b = blocks[bi];
-      if (b.kind === 'vector') {
+      if (b.kind === 'complex') {
+        for (let i = 0; i < b.yDim; i++) flat[`${b.latent}[${i}]`] = y[b.y0 + i];
+      } else if (b.kind === 'vector') {
         const p = b.t.constrain(y.subarray(b.y0, b.y0 + b.yDim));
         for (let i = 0; i < b.K; i++) flat[`${b.latent}[${i}]`] = p[i];
       } else {
@@ -397,7 +413,9 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     const y = new Float64Array(dim);
     for (let bi = 0; bi < blocks.length; bi++) {
       const b = blocks[bi];
-      if (b.kind === 'vector') {
+      if (b.kind === 'complex') {
+        y.set(b.t.unconstrain(scorerPt[b.latent]), b.y0);
+      } else if (b.kind === 'vector') {
         const src = scorerPt[b.latent];
         const p = new Float64Array(b.K);
         for (let i = 0; i < b.K; i++) p[i] = elemOf(src, i);
@@ -419,6 +437,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     let j = 0;
     for (let bi = 0; bi < blocks.length; bi++) {
       const b = blocks[bi];
+      if (b.kind === 'complex') continue;  // paired Cartesian coordinates have unit Jacobian
       j += b.kind === 'vector'
         ? b.t.logDetJ(y.subarray(b.y0, b.y0 + b.yDim))
         : b.t.logDetJ(y[b.y0]);
@@ -486,6 +505,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     hasDiscrete: false,       // only continuous latents reach here
     constrainAll,
     unconstrainAll,
+    complexScorerValue,
     logPosterior,
     logPosteriorBatch,
     logPriorLikBatch,

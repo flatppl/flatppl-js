@@ -1,4 +1,5 @@
 'use strict';
+const values = require('./value.ts');
 
 // Constrained <-> unconstrained bijections and their log-Jacobians, for the
 // gradient-free (MH) and gradient (NUTS) samplers. Standard Stan transforms.
@@ -195,6 +196,31 @@ function zerosumTransform(K: number) {
   };
 }
 
+/** Cartesian chart: a trailing (real, imag) axis, with unit Jacobian. */
+function complexTransform(shape: number[]) {
+  const width = values.numel(shape);
+  return {
+    unconstrain(value: any): Float64Array {
+      const v = values._logicalDense(values.asValue(value));
+      if (v.shape.length !== shape.length || shape.some((n, i) => n !== v.shape[i])) {
+        throw new Error('model-view: complex latent shape differs from its support');
+      }
+      const y = new Float64Array(2 * width);
+      for (let i = 0; i < width; i++) {
+        y[2 * i] = v.data[i];
+        y[2 * i + 1] = v.im?.[i] ?? 0;
+      }
+      return y;
+    },
+    constrain(at: (index: number) => number): any {
+      if (shape.length === 0) return { re: at(0), im: at(1) };
+      const re = new Float64Array(width), im = new Float64Array(width);
+      for (let i = 0; i < width; i++) { re[i] = at(2 * i); im[i] = at(2 * i + 1); }
+      return values.complexValue(re, im, shape);
+    },
+  };
+}
+
 const SUPPORT_BY_DIST: Record<string, (params?: any) => any> = {
   Normal:       () => ({ kind: 'real' }),
   Cauchy:       () => ({ kind: 'real' }),
@@ -241,6 +267,6 @@ function supportOf(distOp: string, params?: any) {
 }
 
 module.exports = {
-  transformFor, simplexTransform, orderedTransform, zerosumTransform,
+  transformFor, simplexTransform, orderedTransform, zerosumTransform, complexTransform,
   supportOf, SUPPORT_BY_DIST, regionBounds,
 };

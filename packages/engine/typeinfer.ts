@@ -5010,8 +5010,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // New spec: arg 1 may be a single positive int OR a vector of
     // positive ints. The vector-literal form (lowered as `vector(...)`)
     // is unpacked into per-axis dims here so downstream shape checks
-    // see concrete dims. A non-literal vector falls through to a
-    // single dynamic-rank axis (best we can do statically).
+    // see concrete dims. A fixed vector binding uses the shape resolver.
     const dims: any[] = [];
     let dimArgs = args.slice(1);
     if (dimArgs.length === 1
@@ -5029,7 +5028,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (s == null) {
         // Permit `iid(M, sizes)` where `sizes` is an integer array.
         if (dimArgs.length === 1 && dT && dT.kind === 'array') {
-          dims.push('%dynamic');
+          dims.push(...(resolveIntegerVectorShape(arg) ?? ['%dynamic']));
           continue;
         }
         diagnostics.push({
@@ -6123,6 +6122,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             && dimArgs[0].op === 'vector'
             && Array.isArray(dimArgs[0].args)) {
           dimArgs = dimArgs[0].args;
+        } else if (dimArgs.length === 1) {
+          const dims = resolveIntegerVectorShape(dimArgs[0]) ?? ['%dynamic'];
+          return T.array(dims.length, dims, inner);
         }
         // Engine-concepts §17.1 — const-eval-driven shape resolution.
         // Same pattern as `iid`: try literal first, then the resolver
