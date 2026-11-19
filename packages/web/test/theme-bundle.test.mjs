@@ -245,7 +245,7 @@ test('a tarball for a different release than the one asked for is rejected', asy
   const { impl } = fakeFetch(themeReleaseUrl(THEME_PIN), archive);
   await assert.rejects(
     syncTheme({ repoRoot: join(root, 'repo'), themeDir: join(root, 'drop'), env: { FLATPPL_THEME_NO_SIBLING: '1' }, log: () => {}, fetchImpl: impl }),
-    /is not flatppl-theme v0\.1\.11/,
+    (error) => error.message.includes(`is not flatppl-theme ${THEME_PIN} (manifest says flatppl-theme v0.0.9)`),
   );
 });
 
