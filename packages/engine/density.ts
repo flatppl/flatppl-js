@@ -67,6 +67,7 @@ import type { IRNode } from './engine-types';
 
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
+const { _isComplex } = require('./sampler-complex.ts');
 const densityPrims = require('./density-prims.ts');
 const stdlibBetaln = require('@stdlib/math-base-special-betaln');
 const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
@@ -1063,7 +1064,9 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   for (let j = 0; j < refNames.length; j++) {
     const k = refNames[j];
     const v = refArrays[k];
-    if (valueLib.isValue(v)) {
+    if (valueLib.isComplexValue(v)) {
+      accessors[j] = (i: number) => valueLib._sliceRow(v, i);
+    } else if (valueLib.isValue(v)) {
       const shape = v.shape;
       if (shape.length === 1) {
         const data = v.data;
@@ -1140,7 +1143,10 @@ function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): a
   const boxK = consumedK >= 2 ? consumedK : _baseBoxDim(baseIR);
   const pName = wIR.params[0];
   let bound: any;
-  if (isRecordValue(value)) {
+  if (rest == null && (_isComplex(value) || valueLib.isComplexValue(value))) {
+    const v = valueLib._logicalDense(valueLib.asValue(value));
+    bound = { kind: 'lit', value: v.shape.length === 0 ? { re: v.data[0], im: v.im[0] } : v };
+  } else if (isRecordValue(value)) {
     // §06 passes a unary weight the whole variate, including named fields
     // and their array/matrix shapes. A surrounding joint may leave fields
     // for its next factor; only the fields consumed by this base belong here.
@@ -1275,6 +1281,11 @@ function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
       head[field.name] = consumed.head;
       rest = consumed.rest;
     }
+  } else if (support.isComplexSupport(first)) {
+    // The variate is one shaped complex value, with both planes retained
+    // when passed to the enclosing weight.
+    head = value;
+    rest = null;
   } else if (['vectorset', 'power', 'product'].includes(first.kind)) {
     const axes = support.axes(first);
     if (axes.length > 1) {
@@ -2123,7 +2134,10 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   //       base leaf consumes whole — so this branch is correct there too,
   //       but we keep the rest-threading path for it untouched to avoid
   //       disturbing the many flat-iid callers.)
-  const nestedValue = valueLib.isValue(value) && value.shape.length > 1 && valueLib.outerRankOf(value) === 1;
+  // Complex scalar cells also need the whole-value path to retain both planes.
+  const nestedValue = valueLib.isValue(value)
+    && ((value.shape.length > 1 && valueLib.outerRankOf(value) === 1)
+        || (value.shape.length === 1 && valueLib.isComplexValue(value)));
   const nestedFootprint = nestedValue || Array.isArray(value) && value.length > 0
     && value.every((el: any) =>
       Array.isArray(el) || valueLib.isValue(el)
@@ -2989,6 +3003,7 @@ function _mcMarginalEstimate(node: any, z: number, M: number, rng: any, env: any
 // [N, …]); a plain JS array (e.g. per-atom record objects from
 // measureToPerAtomRecords) indexes directly.
 function _refAtomAccessor(v: any): (i: number) => any {
+  if (valueLib.isComplexValue(v)) return (i: number) => valueLib._sliceRow(v, i);
   if (valueLib.isValue(v)) {
     const shape = v.shape, data = v.data;
     if (shape.length === 1) return (i: number) => data[i];

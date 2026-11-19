@@ -25,6 +25,7 @@ const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const valueLib      = require('./value.ts');
+const { _isComplex } = require('./sampler-complex.ts');
 const lower         = require('./lower.ts');
 const { getOptimization } = require('./perf-config.ts');
 const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
@@ -286,7 +287,7 @@ function evaluateDerivedBindings(
       env[k] = v;
     } else if (v instanceof Float64Array) {
       env[k] = Array.from(v);
-    } else if (Array.isArray(v)) {
+    } else if (Array.isArray(v) || _isComplex(v) || valueLib.isComplexValue(v)) {
       env[k] = v;
     }
   }
@@ -330,7 +331,7 @@ function pointToRefArrays(
   for (const [k, v] of Object.entries(pt)) {
     if (typeof v === 'number') {
       refArrays[k] = new Float64Array([v]);
-    } else if (v instanceof Float64Array || Array.isArray(v)) {
+    } else if (v instanceof Float64Array || Array.isArray(v) || _isComplex(v)) {
       // A vector of any length, a length-1 one included (spec §03): it stays in env.
       continue;
     } else if (v && (v as any).data instanceof Float64Array && Array.isArray((v as any).shape)) {
@@ -695,7 +696,8 @@ async function buildLogPi(
       const v = pt[k];
       if (v instanceof Float64Array) {
         env[k] = Array.from(v);
-      } else if (v && v.data instanceof Float64Array && Array.isArray(v.shape) && v.shape.length > 1) {
+      } else if (valueLib.isComplexValue(v)
+          || (v && v.data instanceof Float64Array && Array.isArray(v.shape) && v.shape.length > 1)) {
         // Multi-axis (matrix) latent: keep the Value so the likelihood broadcast
         // sees its full rank. Flattening to v.data would collapse [G,M] to 1 axis.
         env[k] = v;
@@ -879,6 +881,12 @@ async function buildLogPi(
         const a = new Float64Array(N);
         for (let i = 0; i < N; i++) a[i] = +pts[i][nm];
         refArrays[nm] = a;
+      } else if (_isComplex(v0) || valueLib.isComplexValue(v0)) {
+        const cells = pts.map(pt => valueLib._logicalDense(valueLib.asValue(pt[nm])));
+        const packed = valueLib.packUniformCells(cells);
+        if (!packed?.im) return null;
+        const batch = valueLib.complexValue(packed.data, packed.im, [N, ...packed.innerShape]);
+        refArrays[nm] = valueLib.withAtomAxis(batch, cells[0]);
       } else {
         const d0 = flatData(v0);
         if (!d0) return null;

@@ -14,7 +14,7 @@ function supportArg(ir: any): any {
 
 /** Resolve the continuous subset of §03; null means unavailable geometry. */
 function resolveSupport(
-  ir: any, number: (ir: any) => number | null,
+  ir: any, valueOf: (ir: any) => any,
   reference: (ir: any) => any = () => null,
 ): Support | null {
   if (!ir) return null;
@@ -23,36 +23,49 @@ function resolveSupport(
   if (ir.kind === 'call' && ir.op === 'let') ir = require('./let-view.ts').letView(ir).top();
   if (ir.kind === 'ref') {
     const resolved = reference(ir);
-    if (resolved && resolved !== ir) return resolveSupport(resolved, number, reference);
+    if (resolved && resolved !== ir) return resolveSupport(resolved, valueOf, reference);
   }
   if (ir.kind === 'const' || ir.kind === 'ref') {
+    if (ir.name === 'complexes') return { kind: 'complexes' };
     const s = parseSetIR(ir, new Map());
     return s && ['reals', 'posreals', 'nonnegreals', 'interval'].includes(s.kind) ? s : null;
   }
   if (ir.kind !== 'call') return null;
   const args = ir.args || [];
   if (ir.op === 'interval' && args.length === 2) {
-    const lo = number(args[0]), hi = number(args[1]);
+    const lo = valueOf(args[0]), hi = valueOf(args[1]);
     return lo == null || hi == null ? null : { kind: 'interval', lo, hi };
   }
   if (['stdsimplex', 'ordered', 'zerosum'].includes(ir.op)) {
-    const n = number(args[0]);
+    const n = valueOf(args[0]);
     return n != null && Number.isInteger(n) && n >= 1 ? { kind: 'vectorset', set: ir.op, n } : null;
   }
   if (ir.op === 'cartpow') {
-    const elem = resolveSupport(args[0], number, reference), n = number(args[1]);
-    return elem && n != null && Number.isInteger(n) && n >= 0 ? { kind: 'power', elem, n } : null;
+    let elem = resolveSupport(args[0], valueOf, reference);
+    if (!elem) return null;
+    const size = args[1];
+    const dims = size?.kind === 'call' && size.op === 'vector'
+      ? size.args.map(valueOf) : dimensionsOf(valueOf(size));
+    if (dims.length === 0 || dims.some((n: number | null) => n == null || !Number.isInteger(n) || n < 0)) return null;
+    for (let i = dims.length - 1; i >= 0; i--) elem = { kind: 'power', elem, n: dims[i] };
+    return elem;
   }
   if (ir.op === 'cartprod') {
     const fields = ir.fields ?? Object.entries(ir.kwargs || {}).map(([name, value]) => ({ name, value }));
     if (fields.length) {
-      const parts = fields.map((f: any) => ({ name: f.name, support: resolveSupport(f.value, number, reference) }));
+      const parts = fields.map((f: any) => ({ name: f.name, support: resolveSupport(f.value, valueOf, reference) }));
       return parts.every((p: any) => p.support) ? { kind: 'record', fields: parts } : null;
     }
-    const parts = args.map((a: any) => resolveSupport(a, number, reference));
+    const parts = args.map((a: any) => resolveSupport(a, valueOf, reference));
     return parts.every((p: any) => p) ? { kind: 'product', parts } : null;
   }
   return null;
+}
+
+function dimensionsOf(size: any): number[] {
+  if (values.isValue(size) && size.shape.length === 1) return Array.from(size.data);
+  if (Array.isArray(size) || size?.BYTES_PER_ELEMENT) return Array.from(size);
+  return [size];
 }
 
 /** Log volume uses the free-coordinate reference, not embedded surface area. */
@@ -89,9 +102,20 @@ function axes(s: Support): number[] {
   return [];
 }
 
+/** A complex scalar and its Cartesian powers use paired real coordinates. */
+function isComplexSupport(s: Support): boolean {
+  return s.kind === 'complexes' || (s.kind === 'power' && isComplexSupport(s.elem));
+}
+
 /** Density one on support. Affine vector sets reuse the engine's chart convention. */
 function contains(s: Support, value: any): boolean {
   if (s.kind === 'record') return s.fields.every((f: any) => contains(f.support, value?.[f.name]));
+  if (isComplexSupport(s)) {
+    if (value == null) return false;
+    const v = values.asValue(value), shape = axes(s);
+    return v.shape.length === shape.length && shape.every((n, i) => n === v.shape[i])
+      && v.data.every(Number.isFinite) && (!v.im || v.im.every(Number.isFinite));
+  }
   const data = values.isValue(value) ? value.data : Array.isArray(value) ? value.flat(Infinity) : value;
   if (s.kind === 'vectorset') {
     return data?.length === s.n && Array.from(data as ArrayLike<number>).every(Number.isFinite)
@@ -117,6 +141,7 @@ function contains(s: Support, value: any): boolean {
 
 /** Use the established scalar/vector charts; unsupported structured charts refuse. */
 function transformSupport(s: Support): any {
+  if (isComplexSupport(s)) return { kind: 'complex', atomShape: axes(s) };
   if (s.kind === 'reals') return { kind: 'real' };
   if (s.kind === 'posreals' || s.kind === 'nonnegreals') return { kind: 'positive' };
   if (s.kind === 'interval') {
@@ -135,4 +160,4 @@ function transformSupport(s: Support): any {
   return { kind: 'unsupported', distOp: 'Lebesgue with structured support' };
 }
 
-module.exports = { supportArg, resolveSupport, logVolume, width, axes, contains, transformSupport };
+module.exports = { supportArg, resolveSupport, logVolume, width, axes, contains, transformSupport, isComplexSupport };
