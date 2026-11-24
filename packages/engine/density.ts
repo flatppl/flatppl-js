@@ -2304,8 +2304,27 @@ function arrayVariateShape(ir: any, env: any): number[] | null {
     }
     case 'pushfwd': return arrayVariateShape(args[1], env);
     case 'normalize': case 'truncate': return arrayVariateShape(args[0], env);
-    case 'weighted': case 'logweighted': return arrayVariateShape(args[1], env);
-    default: return null;
+    case 'weighted': case 'logweighted': case 'tilt': return arrayVariateShape(args[1], env);
+    // §03 `stdsimplex(n)` and `zerosum(n)` are sets of n-vectors.
+    case 'Lebesgue': return Number.isInteger(ir.vectorSet?.n) ? [ir.vectorSet.n] : null;
+    default: return vectorLawShape(ir, env);
+  }
+}
+
+// A vector-variate builtin law (Dirichlet, Multinomial, MvNormal, …) has the
+// length its size parameter gives, read as the density walker reads it. Null
+// for any other law, or for a size that does not resolve here.
+function vectorLawShape(ir: any, env: any): number[] | null {
+  const descr = densityPrims.multivariateShape(ir.op);
+  if (!descr || descr.kind !== 'vector') return null;
+  try {
+    const kwIR = densityPrims.bindMultivariateParams(ir.op, ir.args, ir.kwargs);
+    const kw: Record<string, any> = {};
+    for (const k of Object.keys(kwIR)) kw[k] = samplerLib.evaluateExpr(kwIR[k], env);
+    const n = descr.sizeFrom(kw);
+    return Number.isInteger(n) && n >= 0 ? [n] : null;
+  } catch {
+    return null;
   }
 }
 
