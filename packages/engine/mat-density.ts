@@ -957,7 +957,8 @@ function exactTruncatedBoxIntegral(
       if (point.some((x, k) => !(x > cuts[k][idx[k]] && x < cuts[k][idx[k] + 1]))) {
         throw engineLimitation('the exact truncated-box normalizer', 'density', 'a piece has no representable interior point');
       }
-      env[param] = arrayVariate ? point : point[0];
+      // A Value, so an array-domain op in the weight reads the whole point.
+      env[param] = arrayVariate ? require('./value.ts').vector(point) : point[0];
       const w = +sampler.evaluateExpr(body, env);
       if (!(w >= 0 && Number.isFinite(w))) throw new Error('normalize: a piece has negative or non-finite weight (spec §06)');
       terms.push(Math.log(w) + idx.reduce((s, j, k) => s + Math.log(cuts[k][j + 1] - cuts[k][j]), 0));
@@ -1081,7 +1082,8 @@ function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], 
     const endpoint = (x: number) => {
       if (!Number.isFinite(x)) return leaf.sign * x;
       const point = new Array(d).fill(0); point[i] = x;
-      return scale * +sampler.evaluateExpr(leaf.body, { ...env, [param]: arrayVariate ? point : x });
+      return scale * +sampler.evaluateExpr(leaf.body,
+        { ...env, [param]: arrayVariate ? require('./value.ts').vector(point) : x });
     };
     const ends = [endpoint(axes[i].lo), endpoint(axes[i].hi)].sort((a, b) => a - b);
     const mass = intervalProbability('Normal', { mu: 0, sigma: 1 }, ends[0], ends[1]);
