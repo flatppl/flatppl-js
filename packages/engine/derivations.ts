@@ -475,6 +475,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
       registryName?: string;
       paramIRs?: Record<string, any>;
       stubForward?: boolean;
+      label?: string;
     };
     // Phase 5.1 Session 5e — synthetic MvNormal-lowering marker.
     //
@@ -532,11 +533,12 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     const diagonalLowering = (binding as any).__pushfwdDiagonalAffineLowering;
     if (diagonalLowering) {
       binding.bijection.registryName = 'diagonal_affine';
-      binding.bijection.paramIRs = {
-        scale: diagonalLowering.scaleIR,
-        shift: diagonalLowering.shiftIR,
-        size: diagonalLowering.sizeIR,
-      };
+      binding.bijection.paramIRs = diagonalLowering.shiftVectorIR
+        ? { scale: diagonalLowering.scaleIR, shiftVector: diagonalLowering.shiftVectorIR,
+          size: diagonalLowering.sizeIR }
+        : { scale: diagonalLowering.scaleIR, shift: diagonalLowering.shiftIR,
+          size: diagonalLowering.sizeIR };
+      if (diagonalLowering.label) binding.bijection.label = diagonalLowering.label;
     }
   }
 
@@ -1235,8 +1237,9 @@ function classifyDerivation(
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'locscale') {
       throw new Error(
         'locscale: could not statically determine the scale shape to lower this '
-        + 'affine pushforward — use an iid(<dist>, D) base with a static [D,D] '
-        + 'scale, or use pushfwd directly (spec §06)');
+        + 'affine pushforward — use a nonzero scalar scale with a shift of the '
+        + "variate's length, or an iid(<dist>, D) base with a static [D,D] scale "
+        + 'and a length-D shift, or use pushfwd directly (spec §06)');
     }
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op != null
         && (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op]) {
@@ -4859,6 +4862,7 @@ function resolveBijectionMeta(bij: any, bindings: any) {
   if (fForward) out.fForward = fForward;
   if (bij.registryName) out.registryName = bij.registryName;
   if (bij.paramIRs)     out.paramIRs    = bij.paramIRs;
+  if (bij.label)        out.label       = bij.label;
   return out;
 }
 

@@ -432,6 +432,22 @@ function diagonalAffineCoefficient(v: any, N: number, name: string): any {
   throw new Error('bijection.diagonal_affine: ' + name + ' must be scalar or [N]');
 }
 
+/**
+ * A per-coordinate shift (§07 `add` of two vectors) is its own parameter: a
+ * fixed [D] vector and a live scalar [N] would share a shape at N = D. Fixed
+ * it is [D], live [N, D], so the rank tells the two apart.
+ */
+function diagonalAffineShiftVector(v: any, N: number, D: number): any {
+  if (v?.shape?.length === 1 && v.shape[0] === D && v.data?.length === D) {
+    return { data: v.data, atomStride: 0 };
+  }
+  if (v?.shape?.length === 2 && v.shape[0] === N && v.shape[1] === D && v.data?.length === N * D) {
+    return { data: v.data, atomStride: D };
+  }
+  throw new Error('bijection.diagonal_affine: shiftVector must be [' + D + '] or ['
+    + N + ', ' + D + ']');
+}
+
 /** §06 affine pushforward/inverse, preserving the vector and atom axes. */
 function diagonalAffineMap(value: any, params: any, N: number, inverse: boolean): any {
   if (value?.shape?.length !== 2 || value.shape[0] !== N) {
@@ -439,15 +455,19 @@ function diagonalAffineMap(value: any, params: any, N: number, inverse: boolean)
   }
   const D = value.shape[1];
   const scale = diagonalAffineCoefficient(params.scale, N, 'scale');
-  const shift = diagonalAffineCoefficient(params.shift, N, 'shift');
+  const vector = params.shiftVector != null
+    ? diagonalAffineShiftVector(params.shiftVector, N, D) : null;
+  const shift = vector ? null : diagonalAffineCoefficient(params.shift, N, 'shift');
   const data = new Float64Array(N * D);
   for (let n = 0; n < N; n++) {
-    const s = scale.data[n * scale.stride], b = shift.data[n * shift.stride];
+    const s = scale.data[n * scale.stride];
     if (inverse && D > 0 && (!Number.isFinite(s) || s === 0)) {
       throw new Error('bijection.diagonal_affine: inverse requires finite nonzero scale');
     }
-    for (let j = n * D; j < (n + 1) * D; j++) {
-      data[j] = inverse ? (value.data[j] - b) / s : s * value.data[j] + b;
+    for (let j = 0; j < D; j++) {
+      const b = vector ? vector.data[n * vector.atomStride + j] : shift.data[n * shift.stride];
+      const i = n * D + j;
+      data[i] = inverse ? (value.data[i] - b) / s : s * value.data[i] + b;
     }
   }
   return { shape: [N, D], data };

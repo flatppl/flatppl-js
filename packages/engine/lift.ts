@@ -2412,6 +2412,9 @@ function liftInlineSubexpressions(bindings: any) {
     if (args.length !== 3) return astArg;
     if (args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
     const baseAst = args[0], shiftAst = args[1], scaleAst = args[2];
+    if (__knownAstType(scaleAst)?.kind === 'scalar') {
+      return __routeLocscaleScalarScale(astArg, baseAst, shiftAst, scaleAst);
+    }
     // Static shape gate (mirror MvNormal's cov/mu discovery): scale [D,D],
     // shift [D]. A non-square scale, or one whose D cannot be discovered,
     // falls to the buildDerivations safety net rather than reaching the
@@ -2515,6 +2518,42 @@ function liftInlineSubexpressions(bindings: any) {
     measureConstructors.set(astArg, { ...astArg });
     astArg.callee = makeIdent('pushfwd', astArg.loc);
     astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
+    if (astArg.kwargs) delete astArg.kwargs;
+    return astArg;
+  }
+
+  /**
+   * §06 `locscale(m, shift, scale)` with a scalar scale and a vector shift over
+   * a vector law is the uniform map `scale .* x .+ shift`, so it takes the pushforward's
+   * diagonal route. The scale and shift stay the user's own operands, so a
+   * drawn scale is a live per-atom coefficient: a reified callable cannot
+   * capture a draw, but a measure's parameters can be draws. A call the route
+   * does not take is returned unchanged for the derivations safety net.
+   */
+  function __routeLocscaleScalarScale(astArg: any, baseAst: any, shiftAst: any, scaleAst: any) {
+    // A scalar shift over a vector variate is a typeinfer refusal (§07 `add`).
+    if (__knownAstType(shiftAst)?.kind !== 'array') return astArg;
+    const loc = astArg.loc;
+    const x = { type: 'Placeholder', name: 'x', loc };
+    const body = {
+      type: 'BinaryExpr', op: '+', broadcast: true, loc,
+      left: { type: 'BinaryExpr', op: '*', broadcast: true, left: scaleAst, right: x, loc },
+      right: shiftAst,
+    };
+    const f = {
+      type: 'CallExpr', callee: makeIdent('functionof', loc), builtin: true, loc,
+      args: [body, { type: 'KeywordArg', name: 'x', value: x, loc }],
+    };
+    const constructor = { ...astArg };
+    const call = { type: 'CallExpr', callee: makeIdent('pushfwd', loc), args: [f, baseAst], loc };
+    if (!__routeVectorAffineBroadcast(call, baseAst, { param: 'x', body }, true)) return astArg;
+    // A registry error, such as a zero scale at an atom, names locscale.
+    out.get(call.args[0].name).__pushfwdDiagonalAffineLowering.label = 'locscale';
+    // Keep the constructor's shift and scale dependencies: a drawn scale makes
+    // the resulting measure stochastic although the synthetic map is fixed.
+    measureConstructors.set(astArg, constructor);
+    astArg.callee = makeIdent('pushfwd', loc);
+    astArg.args = call.args;
     if (astArg.kwargs) delete astArg.kwargs;
     return astArg;
   }
@@ -2626,20 +2665,29 @@ function liftInlineSubexpressions(bindings: any) {
    * The diagonal registry keeps shared parameters outside reified iid copies
    * and stores one scale per atom rather than a dense diagonal matrix.
    */
-  function __routeVectorAffineBroadcast(astArg: any, baseAst: any, fn: any) {
+  function __routeVectorAffineBroadcast(astArg: any, baseAst: any, fn: any, typedScale = false) {
     const m = __matchScalarAffineBody(fn.body, fn.param, true);
-    // §07 `mul` admits scalar-vector and `neg` an array, so an undotted scale or
-    // negation is the same uniform map as its dotted spelling. An undotted shift
-    // would be a vector `add`, which this scalar-coefficient route does not take.
-    // Over an iid base the undotted map keeps the scalar route
-    // (`__routeScalarAffinePushfwd`), which takes a vector shift as well.
-    if (!m || (!m.broadcast && (m.shiftAst || __affineBaseIsIid(baseAst)))) return null;
-    if (m.scaleAst && !__staticNonzeroScalar(m.scaleAst)) return null;
-    if (m.shiftAst && (!m.broadcastShift || !__staticScalar(m.shiftAst))) return null;
+    if (!m) return null;
     const domain = __knownAstType(baseAst)?.domain;
     if (domain?.kind !== 'array' || domain.rank !== 1
         || domain.elem?.kind !== 'scalar'
         || !['real', 'integer', 'boolean'].includes(domain.elem.prim)) return null;
+    // A shift is a scalar under a dotted `.+`, or a vector of the variate's
+    // length, dotted or not (§07 `add` of two vectors).
+    const shiftType = m.shiftAst && __knownAstType(m.shiftAst);
+    const vectorShift = !!shiftType && shiftType.kind === 'array' && shiftType.rank === 1
+      && shiftType.elem?.kind === 'scalar' && ['real', 'integer'].includes(shiftType.elem.prim)
+      && !(Number.isInteger(shiftType.shape?.[0]) && Number.isInteger(domain.shape[0])
+        && shiftType.shape[0] !== domain.shape[0]);
+    // §07 `mul` admits scalar-vector and `neg` an array, so an undotted scale or
+    // negation is the same uniform map as its dotted spelling, and an undotted
+    // vector shift is a vector `add`. Over an iid base the undotted map keeps the
+    // scalar route (`__routeScalarAffinePushfwd`), which takes a vector shift too.
+    if (!m.broadcast && ((m.shiftAst && !vectorShift) || __affineBaseIsIid(baseAst))) return null;
+    // `typedScale`: the caller has typed the scale scalar and refused a literal
+    // zero, so an expression such as `2.0 * tau` is a live coefficient too.
+    if (m.scaleAst && !typedScale && !__staticNonzeroScalar(m.scaleAst)) return null;
+    if (m.shiftAst && !vectorShift && (!m.broadcastShift || !__staticScalar(m.shiftAst))) return null;
     const loc = astArg.loc;
     let sizeAst: any;
     if (Number.isInteger(domain.shape[0]) && domain.shape[0] >= 0) {
@@ -2658,7 +2706,7 @@ function liftInlineSubexpressions(bindings: any) {
       : cloneAst(e);
     const scaleAst = signed(m.scaleAst || makeNumLit(1, loc), m.negate);
     const shiftAst = signed(m.shiftAst || makeNumLit(0, loc), m.negateShift);
-    return __emitAffineRegistryPushfwd(astArg, baseAst, scaleAst, shiftAst, sizeAst);
+    return __emitAffineRegistryPushfwd(astArg, baseAst, scaleAst, shiftAst, sizeAst, vectorShift);
   }
 
   /**
@@ -2673,7 +2721,8 @@ function liftInlineSubexpressions(bindings: any) {
    * both want the registry's atom-batched forward on the sample side.
    */
   function __emitAffineRegistryPushfwd(astArg: any, baseAst: any,
-                                       LAst: any, bAst: any, sizeAst: any = null) {
+                                       LAst: any, bAst: any, sizeAst: any = null,
+                                       vectorShift = false) {
     // Synthetic bijection + registry marker, shaped like the locscale and
     // MvNormal lowerings. The registry supplies inverse and volume; pre-hoist
     // the callable slots so derivations' construction loop sees Identifiers.
@@ -2708,10 +2757,11 @@ function liftInlineSubexpressions(bindings: any) {
       const coefficientIR = (a: any) => lowerExpr(
         a.type === 'Identifier' || a.type === 'NumberLiteral' ? cloneAst(a)
           : finishLiftMeasure(cloneAst(a)), liftLowerCtx);
-      (bijBinding as any).__pushfwdDiagonalAffineLowering = {
-        scaleIR: coefficientIR(LAst), shiftIR: coefficientIR(bAst),
-        sizeIR: coefficientIR(sizeAst),
-      };
+      (bijBinding as any).__pushfwdDiagonalAffineLowering = vectorShift
+        ? { scaleIR: coefficientIR(LAst), shiftVectorIR: coefficientIR(bAst),
+          sizeIR: coefficientIR(sizeAst) }
+        : { scaleIR: coefficientIR(LAst), shiftIR: coefficientIR(bAst),
+          sizeIR: coefficientIR(sizeAst) };
     } else {
       (bijBinding as any).__pushfwdAffineLowering = {
         LIR: lowerExpr(cloneAst(LAst), liftLowerCtx),
