@@ -253,10 +253,9 @@ const NOT_SCALAR_AFFINE: any[] = [
   // Neither operand of the product is a bare parameter reference.
   ['product of two parameter occurrences',
     `pushfwd(x -> x * x, iid(Normal(0.0, 1.0), 2))`],
-  // §06 case 1 admits `divide`, but typeinfer's `divide` is scalars-only
-  // (absent from its BINARY_ARITH_OPS), so `x / s` over a vector types as a
-  // scalar and the query is refused before the lift is consulted. Routing it
-  // would pair a correct number with a static error.
+  // §07 `divide` admits array-scalar, but the scalar route reads the map as
+  // written and matches only `*`, so `x / s` over an iid base takes the general
+  // pushforward path rather than this registry.
   ['scalar divide', `pushfwd(x -> x / 2.0, iid(Normal(0.0, 1.0), 2))`],
   // The parameter in the DIVISOR is not affine in it.
   ['parameter as divisor', `pushfwd(x -> 2.0 / x, iid(Normal(0.0, 1.0), 2))`],

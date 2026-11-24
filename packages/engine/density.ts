@@ -2460,19 +2460,17 @@ function countingSupportRefs(ir: any, refs: any): boolean {
 
 /** §03 simplex/zero-sum charts have one fewer free coordinate than their array. */
 function diagonalReferenceDimension(ir: any, ambient: number): number {
-  return ambient - referenceDeficit(ir, undefined, 0, true);
+  return ambient - referenceDeficit(ir);
 }
 
 // The free coordinates a measure's continuous reference lacks against its
 // array: one for a §03 `stdsimplex(n)` or `zerosum(n)` support, else none. A
 // bijection keeps the dimension of its support, so maps and wrappers pass
 // their base's deficit through, and a product of charts lacks the sum of its
-// factors' deficits. The diagonal-affine volume path takes no product with a
-// lower-dimensional factor (`affineProducts`).
-function referenceDeficit(ir: any, resolveMeasureRef?: (name: string) => any, depth = 0,
-                          affineProducts = false): number {
+// factors' deficits.
+function referenceDeficit(ir: any, resolveMeasureRef?: (name: string) => any, depth = 0): number {
   if (!ir || depth > 64) return 0;
-  const recur = (x: any) => referenceDeficit(x, resolveMeasureRef, depth + 1, affineProducts);
+  const recur = (x: any) => referenceDeficit(x, resolveMeasureRef, depth + 1);
   if (ir.kind === 'ref' && ir.ns === 'self' && resolveMeasureRef) return recur(resolveMeasureRef(ir.name));
   if (ir.op === 'Dirichlet' || (ir.op === 'Lebesgue'
       && (ir.vectorSet?.set === 'stdsimplex' || ir.vectorSet?.set === 'zerosum'))) return 1;
@@ -2481,15 +2479,12 @@ function referenceDeficit(ir: any, resolveMeasureRef?: (name: string) => any, de
   }
   if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'relabel') return recur(ir.args[0]);
   const branches = ir.op === 'select' ? ir.branches : ir.op === 'superpose' ? ir.args : null;
-  if (branches?.length) return mixtureReferenceDeficit(branches, resolveMeasureRef, depth + 1, affineProducts);
+  if (branches?.length) return mixtureReferenceDeficit(branches, resolveMeasureRef, depth + 1);
   const factors = ir.op === 'joint' ? (ir.fields?.map((f: any) => f.value) || ir.args) : null;
   const copies = ir.op === 'iid' ? staticIidCount(ir.args?.[1]) : null;
   if (!factors && ir.op !== 'iid') return 0;
   const parts = factors ? factors.map(recur) : [recur(ir.args?.[0])];
   if (parts.every((d: number) => d === 0)) return 0;
-  if (affineProducts) {
-    throw new Error('density: affine product with singular components has no established reference dimension');
-  }
   if (!factors && copies == null) {
     throw new Error('density: an iid of a lower-dimensional law needs a static size to count its '
       + 'free coordinates');
@@ -2513,12 +2508,11 @@ function staticIidCount(size: any): number | null {
 // `zerosum(n)` support n − 1 free coordinates, so such a component and a
 // full-dimensional one have none in common. Counting components carry no
 // continuous reference and are not compared.
-function mixtureReferenceDeficit(branches: any[], resolveMeasureRef?: (name: string) => any, depth = 0,
-                                 affineProducts = false): number {
+function mixtureReferenceDeficit(branches: any[], resolveMeasureRef?: (name: string) => any, depth = 0): number {
   let deficit: number | null = null;
   for (const b of branches) {
     if (measureReferenceClass(b, 0, resolveMeasureRef) === 'noncontinuous') continue;
-    const d = referenceDeficit(b, resolveMeasureRef, depth + 1, affineProducts);
+    const d = referenceDeficit(b, resolveMeasureRef, depth + 1);
     if (deficit !== null && d !== deficit) {
       throw new Error('density: mixture branches have different reference dimensions (§03: a '
         + 'stdsimplex(n) or zerosum(n) support has n − 1 free coordinates), so the '
@@ -2557,8 +2551,8 @@ function refuseLowerDimensionalImage(bij: any, M_ir: any): void {
   if (!lkj && bij?.registryName === 'diagonal_affine') return;
   throw new Error('density: refused a pushfwd of a law on a lower-dimensional support: §03 and '
     + '§06 give its image a density only for a stdsimplex(n) or zerosum(n) support under a '
-    + 'uniform affine map, which this engine reads when written x -> a .* x .+ b with scalar a; '
-    + 'every other image, and every image of LKJ or LKJCholesky, is singular (§06 "Singular laws")');
+    + 'uniform affine map x -> a .* x .+ b with nonzero scalar a; every other image, and every '
+    + 'image of LKJ or LKJCholesky, is singular (§06 "Singular laws")');
 }
 
 // The name a refusal shows for a pushforward's map: its binding, or the
