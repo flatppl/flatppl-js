@@ -142,10 +142,10 @@ function measureToRefValue(m: any, name: string, label: string) {
  * shapes a vector-valued binding can take:
  *   - `m.value` (already a shape-tagged Value, e.g. an iid / pushfwd
  *     output `[N, D]`) — returned as-is.
- *   - composite `m.elems` (a tuple / array measure whose components are
- *     scalar measures, e.g. `muv = [m1, m2]`) — the per-atom component
- *     samples are STACKED into an atom-major `[N, D]` buffer
- *     (`data[n*D + d] = elems[d].samples[n]`), tagged `outerRank: 1`.
+ *   - composite `m.elems` (a tuple / array measure, e.g. `muv = [m1, m2]`
+ *     or a positional `joint` of scalar or vector laws) — each atom's
+ *     component values are CONCATENATED in component order into an
+ *     atom-major `[N, D]` buffer, D the sum of the component widths.
  *   - scalar `m.samples` ([N] batched scalar) — wrapped as `[N]`.
  *
  * Unlike `measureToRefValue`, this knows how to flatten a composite
@@ -153,24 +153,47 @@ function measureToRefValue(m: any, name: string, label: string) {
  * registry's atom-batched param contract expects. Throws for shapes it
  * can't flatten (ragged / nested-composite elems).
  */
+// One component of a composite measure as atom-major per-atom vectors: a
+// scalar component (`samples` [N], or a `value` of shape [N]) has width 1, a
+// vector component (`value` [N, d]) width d. Null for any other shape.
+function compositePartPerAtom(e: any): { N: number; d: number; data: ArrayLike<number> } | null {
+  if (e && e.value && Array.isArray(e.value.shape)
+      && (e.value.shape.length === 1 || e.value.shape.length === 2)) {
+    const v = valueLib._logicalDense(e.value);
+    return { N: v.shape[0], d: v.shape.length === 2 ? v.shape[1] : 1, data: v.data };
+  }
+  if (e && e.samples && e.samples.BYTES_PER_ELEMENT !== undefined) {
+    return { N: e.samples.length, d: 1, data: e.samples };
+  }
+  return null;
+}
+
 function measureToParamValue(m: any, name: string, label: string) {
   if (m == null) {
     throw new Error(label + ': param measure for "' + name + '" is null/undefined');
   }
   if (m.value && Array.isArray(m.value.shape)) return m.value;
-  if (Array.isArray(m.elems) && m.elems.length > 0
-      && m.elems.every((e: any) => e && e.samples
-        && e.samples.BYTES_PER_ELEMENT !== undefined)) {
-    const D = m.elems.length;
-    const N = m.elems[0].samples.length;
-    const data = new Float64Array(N * D);
-    for (let d = 0; d < D; d++) {
-      const s = m.elems[d].samples;
-      if (s.length !== N) {
+  const parts = Array.isArray(m.elems) && m.elems.length > 0
+    ? m.elems.map(compositePartPerAtom) : null;
+  if (parts && parts.every(Boolean)) {
+    // §06: a positional `joint` concatenates its components' variates (`cat`),
+    // so each atom's vector is its components' per-atom values in component
+    // order — the order the density path consumes them in.
+    const N = parts[0].N;
+    parts.forEach((p: any, k: number) => {
+      if (p.N !== N) {
         throw new Error(label + ': ragged composite param measure for "'
-          + name + '" (component ' + d + ' length ' + s.length + ' ≠ ' + N + ')');
+          + name + '" (component ' + k + ' has ' + p.N + ' atoms ≠ ' + N + ')');
       }
-      for (let n = 0; n < N; n++) data[n * D + d] = s[n];
+    });
+    const D = parts.reduce((s: number, p: any) => s + p.d, 0);
+    const data = new Float64Array(N * D);
+    let offset = 0;
+    for (const p of parts) {
+      for (let n = 0; n < N; n++) {
+        for (let j = 0; j < p.d; j++) data[n * D + offset + j] = p.data[n * p.d + j];
+      }
+      offset += p.d;
     }
     return valueLib.batchOf({ shape: [N, D], data }, []);
   }
