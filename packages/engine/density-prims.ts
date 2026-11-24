@@ -1209,6 +1209,27 @@ function _consumeIid(ir: any, t: any, partial = false): StaticConsumeResult {
 // cases can be checked statically by reading f's body's inferred
 // type. Higher-rank or non-typed bijections fall through to
 // deferred.
+// A numeric variate type's kind and rank, or null otherwise. Records stay out:
+// a relabelling map (§04) takes a scalar or vector to a record legitimately.
+function _variateKind(t: any): string | null {
+  if (!t) return null;
+  if (t.kind === 'scalar') return t.kind;
+  if (t.kind === 'array' || t.kind === 'tvector') return t.kind + ':' + t.rank;
+  return null;
+}
+
+// The name a refusal shows for a pushforward's map: a binding or built-in name,
+// or the built-in that `fn(f(_))` applies. A compound body has no name the user
+// wrote: its outer op may come from an operator, such as `mul` from `*`.
+function _mapLabel(f: any): string | null {
+  if (f?.kind === 'ref' && f.name) return f.name;
+  if (f?.op !== 'functionof' || f.params?.length !== 1) return null;
+  const body = f.body;
+  const arg = body?.kind === 'call' && body.args?.length === 1 ? body.args[0] : null;
+  return arg?.kind === 'ref' && arg.name === f.params[0] && typeof body.op === 'string'
+    ? body.op : null;
+}
+
 function _consumePushfwd(ir: any, variateType: any): StaticConsumeResult {
   const args = ir.args || [];
   if (args.length < 2) {
@@ -1221,6 +1242,33 @@ function _consumePushfwd(ir: any, variateType: any): StaticConsumeResult {
   // annotation we can't tell what shape f produces; defer.
   const bij = ir.bijection;
   if (!bij || !bij.f || !bij.f.body) {
+    // Every synthesised forward map keeps the variate's kind (§06 "Engine
+    // contract for `pushfwd` density evaluation"), so a map that changes it,
+    // such as `sum` of a vector, has a density only through an explicit
+    // `bijection(f, f_inv, logvolume)`. Where the map's codomain is not typed
+    // the point is checked against the base instead. Checking the base
+    // through staticConsume would report the base's footprint as the reason.
+    const from = baseIR?.meta?.type?.domain;
+    const typed = ir.meta?.type?.domain;
+    const label = _mapLabel(args[0]);
+    const map = label ? "pushfwd of '" + label + "'" : 'pushfwd of this map';
+    const contract = '(§06 "Engine contract for `pushfwd` density evaluation")';
+    if (_variateKind(from) !== null) {
+      if (_variateKind(typed) !== null) {
+        if (_variateKind(typed) !== _variateKind(from)) {
+          return { logpType: T.REAL, rest: variateType,
+            error: map + " changes the variate's kind from " + T.show(from) + ' to '
+              + T.show(typed) + ', and every synthesised forward map preserves kind, so its '
+              + 'density needs bijection(f, f_inv, logvolume) ' + contract };
+        }
+      } else if (_variateKind(variateType) !== null
+          && _variateKind(variateType) !== _variateKind(from)) {
+        return { logpType: T.REAL, rest: variateType,
+          error: map + ": the point's kind " + T.show(variateType) + " does not match the base "
+            + "variate's kind " + T.show(from) + ', and every synthesised forward map preserves '
+            + 'kind, so a kind-changing map needs bijection(f, f_inv, logvolume) ' + contract };
+      }
+    }
     return staticConsume(baseIR, variateType);
   }
   const fBodyT = bij.f.body && bij.f.body.meta && bij.f.body.meta.type;
