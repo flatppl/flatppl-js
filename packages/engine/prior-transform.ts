@@ -14,6 +14,7 @@ const { quantile, hasQuantile } = require('./inverse-cdf.ts');
 const { truncatedQuantile } = require('./forward-cdf.ts');
 const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
 const { recordDerivedFailure, derivedFailureOf } = require('./derived-failures.ts');
+const valueLib     = require('./value.ts');
 
 // Evaluate a param IR to a number in env. A failure names `what` and the
 // cause, or the derived binding whose failure left a ref unbound.
@@ -288,8 +289,10 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
       return {
         count: basePlan.count,
         realise: () => { throw new Error('prior-transform: pushfwd of a vector base is a vector plan'); },
+        // The variate is bound as a Value: an array-domain op such as `neg`
+        // evaluates a Value whole and gives null for a plain JS array.
         realiseVec: (u, off, env) => asVector(sampler.evaluateExpr(body, Object.assign({}, env,
-          { [placeholder]: Array.from(basePlan.realiseVec!(u, off, env)) }))),
+          { [placeholder]: valueLib.vector(Float64Array.from(basePlan.realiseVec!(u, off, env))) }))),
       };
     }
     return {

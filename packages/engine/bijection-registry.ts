@@ -214,8 +214,11 @@ function affineAtomBatchedForward(z: any, params: any, N: number): any {
     }
     Lz = { shape: [N, D], data: out };
   } else {
+    // L is shared here (the batched case is above) and z is [N, D], so the
+    // atom axes are known: from shape alone a [1, 1] L at N = 1 would read as
+    // batched.
     Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
-      ? valueOps.mulN(L, z, N)
+      ? valueOps.mulN(L, z, N, [false, true])
       : ops.dispatch('mul', [L, z], { atomN: N });
   }
   // b + Lz, atom-aware: b may be atom-indep [D] (broadcast over [N, D])
