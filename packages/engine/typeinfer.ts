@@ -4782,11 +4782,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // scalar default for the cases this can't specialize (a bare builtin symbol,
   // a multi-param callable, an unresolved base). The density side already
   // evaluates f's body at the drawn value, so this makes the TYPE agree.
-  function _pushfwdCodomain(fExpr: any, inputType: any, scopes: any): any {
+  function _pushfwdCodomain(fExpr: any, inputType: any, scopes: any, loc?: any): any {
     if (!inputType || inputType.kind === 'failed' || inputType.kind === 'deferred'
         || inputType.kind === 'any') return null;
     const reif = _reificationWithArity(fExpr);
-    if (!reif) return null;
+    if (!reif) return _builtinMapCodomain(fExpr, inputType, scopes, loc);
     const scope = new Map();
     scope.set(reif.params[0], inputType);
     // Speculative: infer the body purely to READ its codomain. Any diagnostics
@@ -4816,6 +4816,36 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
     return T.isValue(bodyT) ? bodyT : null;
+  }
+
+  // A bare built-in `f` (or a bijection whose forward is one) maps the variate
+  // as `f(x)`, so its §07 domain decides the codomain. A scalar-domain `f` over
+  // an array variate is ill-typed: the elementwise map is the broadcast, which
+  // the model writes as `fn(f.(_))` (§04 "Broadcasting"). An array-domain `f`
+  // such as `neg` gives its own codomain for the variate.
+  function _builtinMapCodomain(fExpr: any, inputType: any, scopes: any, loc: any): any {
+    let head: any = resolveBindingRefs(fExpr);
+    for (let i = 0; i < 16 && head?.op === 'bijection'; i++) head = resolveBindingRefs(head.args?.[0]);
+    if (!head || head.kind !== 'ref' || head.ns !== 'self'
+        || loweredModule.bindings.has(head.name)) return null;
+    const name = head.name;
+    if (SCALAR_ONLY_OPS.has(name) && _isNonScalarOperand(inputType)) {
+      diagnostics.push({
+        severity: 'error', loc,
+        message: 'pushfwd: the map `' + name + '` takes a scalar, and the base measure\'s '
+          + 'variate is ' + T.show(inputType) + '; write the elementwise map `fn('
+          + name + '.(_))` (spec §04 "Broadcasting")',
+        refusesEvaluation: true,
+      });
+      return T.failed('pushfwd scalar map over an array');
+    }
+    const param = '%pushfwd_variate';
+    const scope = new Map([[param, inputType]]);
+    const savedLen = diagnostics.length;
+    const t: any = inferExpr({ kind: 'call', op: name, args: [{ kind: 'ref', ns: '%local', name: param }] },
+      scopes.concat([scope]));
+    diagnostics.length = savedLen;
+    return T.isValue(t) ? t : null;
   }
 
   /** §06 tilt keeps B's variate and a common named kernel interface. */
@@ -4859,7 +4889,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         const cod = inferCallback(args[0], [domain], scopes, 'pushfwd', expr.loc);
         return cod?.kind === 'failed' || T.isValue(cod) ? cod : null;
       }
-      if (!hasExtras) return _pushfwdCodomain(args[0], domain, scopes);
+      if (!hasExtras) return _pushfwdCodomain(args[0], domain, scopes, expr.loc);
       const extras = args.slice(2), keywords = expr.kwargs || {};
       const inputs = additionalInputs(args[0], [domain], extras, keywords, scopes, 'pushfwd', expr.loc);
       if (!inputs) return T.failed('pushfwd additional arguments');

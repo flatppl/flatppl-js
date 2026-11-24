@@ -4763,6 +4763,8 @@ function pushfwdBijectionMeta(fnRef: string, bindings: any): any {
         fForward: { body: fBinding.ir.body, paramName: holeName },
         fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
         logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: !inv.wholeMap },
+        // The engine derived this inverse; no annotation states the volume.
+        derived: true,
       };
     }
   }
