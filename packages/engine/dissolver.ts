@@ -1088,6 +1088,42 @@ function _collectionHeadSlicesPerCell(
   return true;
 }
 
+// The indices of the params a callable body reads.
+function _paramsRead(expr: any, paramIndex: Map<string, number>, out: Set<number>): void {
+  if (!expr || typeof expr !== 'object') return;
+  if (Array.isArray(expr)) {
+    for (const e of expr) _paramsRead(e, paramIndex, out);
+    return;
+  }
+  if (expr.kind === 'ref' && (expr.ns === '%local' || expr.ns === 'self')
+      && paramIndex.has(expr.name)) {
+    out.add(paramIndex.get(expr.name)!);
+    return;
+  }
+  for (const k of Object.keys(expr)) {
+    if (k !== 'loc') _paramsRead(expr[k], paramIndex, out);
+  }
+}
+
+// Whether a rewrite of `broadcast(f, args…)` into f's body keeps the
+// broadcast's shape. §04 "Broadcasting" maps f elementwise, so the result
+// has the shape of the collection arguments whatever the body computes. The
+// rewrite takes the shape of the arguments the body reads, so an argument the
+// body ignores loses its axes: `(x -> 0.0).(v)` would rewrite to the scalar
+// `0.0`. Every argument not proved scalar must reach the body.
+function _bodyKeepsBroadcastShape(
+  body: any, paramIndex: Map<string, number>, args: any[], bindings: any,
+): boolean {
+  const read: Set<number> = new Set();
+  _paramsRead(body, paramIndex, read);
+  for (let i = 0; i < args.length; i++) {
+    if (read.has(i)) continue;
+    const tp = bindings ? _argTypeAndPhase(args[i], bindings) : null;
+    if (!tp || !tp.type || tp.type.kind !== 'scalar') return false;
+  }
+  return true;
+}
+
 // Recursively substitute `%local` refs in a body expression with the
 // corresponding broadcast args, and verify every op-call in the body
 // is in DISSOLVE_SAFE_OPS. Returns the substituted IR on success, or
@@ -1914,6 +1950,9 @@ function _tryDissolveKernelBroadcast(bcIR: any, bindings: any): any | null {
     paramIndex.set(params[i], i);
     replacementList[i] = paramReplacement.get(params[i]);
   }
+  // A constructor that ignores a collection argument would lose that
+  // argument's axes in the rewritten `broadcast(<Dist>, …)`.
+  if (!_bodyKeepsBroadcastShape(distCall, paramIndex, replacementList, bindings)) return null;
 
   // Constructor parameter expressions may leave the callback only when they
   // are elementwise. Reductions and container construction must run per cell.
@@ -2069,6 +2108,7 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
   // Build the param-index map for the body walk.
   const paramIndex: Map<string, number> = new Map();
   for (let i = 0; i < params.length; i++) paramIndex.set(params[i], i);
+  if (!_bodyKeepsBroadcastShape(body, paramIndex, appliedArgs, bindings)) return null;
   // A §07 collection-domain head is permitted at the body's OUTERMOST node
   // only when the whole-value call provably applies it per outer slice.
   // Recognise the body shape the check assumes — the head over the head's
