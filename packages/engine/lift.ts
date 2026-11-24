@@ -2556,10 +2556,13 @@ function liftInlineSubexpressions(bindings: any) {
     if (args.length !== 2) return astArg;
     if (args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
     const fAst = args[0], baseAst = args[1];
+    // Every spelling of a uniform map reaches the diagonal route through the
+    // normal form. The matrix and iid scalar routes below read the map as written.
+    const normal = __normalizedUnaryCallable(fAst);
+    const componentwise = normal && __routeVectorAffineBroadcast(astArg, baseAst, normal);
+    if (componentwise) return componentwise;
     const fn = __resolveFunctionofRef(fAst);
     if (!fn) return astArg;
-    const componentwise = __routeVectorAffineBroadcast(astArg, baseAst, fn);
-    if (componentwise) return componentwise;
     const affine = __matchAffineBody(fn.body, fn.param);
     // `2.0 * x + b` matches the matrix body shape too — only the scale tells
     // the two apart — so a statically-scalar scale goes to the scalar route,
@@ -2625,7 +2628,12 @@ function liftInlineSubexpressions(bindings: any) {
    */
   function __routeVectorAffineBroadcast(astArg: any, baseAst: any, fn: any) {
     const m = __matchScalarAffineBody(fn.body, fn.param, true);
-    if (!m || !m.broadcast) return null;
+    // §07 `mul` admits scalar-vector and `neg` an array, so an undotted scale or
+    // negation is the same uniform map as its dotted spelling. An undotted shift
+    // would be a vector `add`, which this scalar-coefficient route does not take.
+    // Over an iid base the undotted map keeps the scalar route
+    // (`__routeScalarAffinePushfwd`), which takes a vector shift as well.
+    if (!m || (!m.broadcast && (m.shiftAst || __affineBaseIsIid(baseAst)))) return null;
     if (m.scaleAst && !__staticNonzeroScalar(m.scaleAst)) return null;
     if (m.shiftAst && (!m.broadcastShift || !__staticScalar(m.shiftAst))) return null;
     const domain = __knownAstType(baseAst)?.domain;
@@ -2675,7 +2683,9 @@ function liftInlineSubexpressions(bindings: any) {
     let forwardAst = makeFnHole(astArg.loc);
     if (sizeAst) {
       const f = astArg.args[0];
-      forwardAst = cloneAst(f.type === 'Identifier' ? out.get(f.name).node.value : f);
+      // A bare built-in name has no binding: its forward is `fn(f(_))`.
+      forwardAst = cloneAst(f.type === 'Identifier'
+        ? (out.get(f.name)?.node?.value || builtinAsFn(f)) : f);
     }
     out.set(fwdAnon, makeSyntheticBinding(fwdAnon, forwardAst));
     const invAnon = freshName();
@@ -2722,6 +2732,70 @@ function liftInlineSubexpressions(bindings: any) {
    * lambda syntax `x -> …` and an explicit `functionof` parse to — either
    * inline or through a 1-level named ref. Null for anything else.
    */
+  /**
+   * One normal form for a one-input map ahead of the affine matchers, so every
+   * spelling of the same map reaches them alike. The callable may be
+   * `functionof(body, x = …)`, `fn(body)` with exactly one hole, a binding of
+   * either, or a bare built-in name `f` (the `fn(f(_))` of §06's example). In
+   * the body, `neg(e)` is `-e` (§07 `neg`), and a division by a static nonzero
+   * scalar is a multiplication by its reciprocal (§07 `divide` admits
+   * array-scalar). Returns a fresh body; the user's AST is not changed.
+   */
+  function __normalizedUnaryCallable(fAst: any): { param: string; body: any } | null {
+    const fn = __resolveFunctionofRef(fAst) || __resolveOneHoleFn(fAst);
+    return fn && { param: fn.param, body: __affineNormalForm(cloneAst(fn.body)) };
+  }
+
+  function __resolveOneHoleFn(ast: any): { param: string; body: any } | null {
+    let e = ast;
+    if (e?.type === 'Identifier') {
+      const b = out.get(e.name);
+      e = b ? b.node?.value
+        : !bindings.has(e.name) && BUILTIN_FUNCTIONS.has(e.name) ? builtinAsFn(e) : null;
+    }
+    if (e?.type !== 'CallExpr' || e.callee?.type !== 'Identifier' || e.callee.name !== 'fn'
+        || e.args?.length !== 1) return null;
+    const param = '%affine_variate';
+    let holes = 0;
+    const replace = (node: any): any => {
+      if (!node || typeof node !== 'object') return node;
+      if (node.type === 'Hole') { holes++; return { type: 'Placeholder', name: param, loc: node.loc }; }
+      // Nested reifiers own their holes.
+      if (node.type === 'CallExpr' && ['fn', 'functionof', 'kernelof'].includes(node.callee?.name)) return node;
+      const copy: any = Array.isArray(node) ? [] : {};
+      for (const k of Object.keys(node)) copy[k] = k === 'loc' ? node[k] : replace(node[k]);
+      return copy;
+    };
+    const body = replace(e.args[0]);
+    return holes === 1 ? { param, body } : null;
+  }
+
+  // `neg(e)` → `-e`; `e / s` → `e * (1 / s)` for a static nonzero scalar s,
+  // folded when s is a literal. Bottom-up, so nested spellings normalise too.
+  function __affineNormalForm(node: any): any {
+    if (!node || typeof node !== 'object') return node;
+    for (const k of Object.keys(node)) {
+      if (k === 'loc') continue;
+      node[k] = Array.isArray(node[k]) ? node[k].map(__affineNormalForm) : __affineNormalForm(node[k]);
+    }
+    if (node.type === 'CallExpr' && node.callee?.type === 'Identifier' && node.callee.name === 'neg'
+        && !bindings.has('neg') && !out.has('neg')
+        && node.args?.length === 1 && node.args[0]?.type !== 'KeywordArg') {
+      return { type: 'UnaryExpr', op: '-', operand: node.args[0], loc: node.loc };
+    }
+    if (node.type === 'BinaryExpr' && node.op === '/' && __staticNonzeroScalar(node.right)) {
+      return { ...node, op: '*', right: __reciprocal(node.right) };
+    }
+    return node;
+  }
+
+  function __reciprocal(s: any): any {
+    let sign = 1, inner = s;
+    while (inner.type === 'UnaryExpr' && inner.op === '-') { sign = -sign; inner = inner.operand; }
+    if (inner.type === 'NumberLiteral') return makeNumLit(sign / inner.value, s.loc);
+    return { type: 'BinaryExpr', op: '/', left: makeNumLit(sign, s.loc), right: inner, loc: s.loc };
+  }
+
   function __resolveFunctionofRef(ast: any): { param: string; body: any } | null {
     let e = ast;
     if (e && e.type === 'Identifier') {
@@ -2874,12 +2948,10 @@ function liftInlineSubexpressions(bindings: any) {
    * Dotted operators are admitted only for the diagonal registry route, whose
    * scalar-coefficient checks distinguish broadcast shifts from array add.
    *
-   * §06 case 1 also admits `divide`, but `x / s` is NOT matched: typeinfer's
-   * `divide` carries a scalars-only `(real, real) → real` signature (it is
-   * absent from typeinfer's `BINARY_ARITH_OPS`), so a vector-over-scalar
-   * division types as a scalar and the query is refused before the lift is
-   * consulted. Routing it would emit a correct number alongside a static
-   * error. Reinstating the form needs the typeinfer fix first.
+   * A division `x / s` reaches this matcher as `x * (1 / s)`:
+   * `__normalizedUnaryCallable` rewrites a division by a static nonzero scalar
+   * ahead of it (§07 `divide` admits array-scalar), and leaves any other
+   * division to the general pushforward path.
    */
   function __matchScalarAffineBody(body: any, param: string, allowBroadcast = false): {
     scaleAst: any; negate: boolean;
@@ -2972,6 +3044,11 @@ function liftInlineSubexpressions(bindings: any) {
       const b = out.get(inner.name);
       const t = b && b.inferredType;
       return !!t && t.kind === 'scalar';
+    }
+    // The reciprocal `__affineNormalForm` writes for a division by a scalar binding.
+    if (inner.type === 'BinaryExpr' && inner.op === '/' && !inner.broadcast
+        && inner.left?.type === 'NumberLiteral' && inner.right?.type === 'Identifier') {
+      return __staticScalar(inner.left, nonzero) && __staticScalar(inner.right, true);
     }
     return false;
   }
