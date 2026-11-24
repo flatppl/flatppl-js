@@ -1886,6 +1886,15 @@ function productLogZ(factorIRs: any[], variate: any, theta: any, ctx: any): numb
     throw new Error('density: shared-variate product_dist factor is not a '
       + 'recognised scalar reference measure — cannot resolve its normalizer');
   }
+  // §06 `tilt(M, B)` over a point mass B is that point mass, normalized by M's
+  // density at the atom. An engine unable to evaluate the normalizer must
+  // refuse the query (§06 `tilt`), and neither the support sum nor quadrature
+  // here takes a point-mass base.
+  if (kernels[0].kernel === 'Dirac') {
+    throw new Error('density: refused a tilt onto a point mass: this engine does not evaluate '
+      + 'the normalizer over a point mass (§06 `tilt`: an engine unable to evaluate the '
+      + 'normalizer must refuse the query)');
+  }
   // Reweighting retains the base reference measure (§06). A counting
   // measure needs a support sum, not midpoint integration of its PMF.
   // The declared plotting/domain interval does not truncate that support.

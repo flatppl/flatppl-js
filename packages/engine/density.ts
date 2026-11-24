@@ -2460,27 +2460,119 @@ function countingSupportRefs(ir: any, refs: any): boolean {
 
 /** §03 simplex/zero-sum charts have one fewer free coordinate than their array. */
 function diagonalReferenceDimension(ir: any, ambient: number): number {
+  return ambient - referenceDeficit(ir, undefined, 0, true);
+}
+
+// The free coordinates a measure's continuous reference lacks against its
+// array: one for a §03 `stdsimplex(n)` or `zerosum(n)` support, else none. A
+// bijection keeps the dimension of its support, so maps and wrappers pass
+// their base's deficit through, and a product of charts lacks the sum of its
+// factors' deficits. The diagonal-affine volume path takes no product with a
+// lower-dimensional factor (`affineProducts`).
+function referenceDeficit(ir: any, resolveMeasureRef?: (name: string) => any, depth = 0,
+                          affineProducts = false): number {
+  if (!ir || depth > 64) return 0;
+  const recur = (x: any) => referenceDeficit(x, resolveMeasureRef, depth + 1, affineProducts);
+  if (ir.kind === 'ref' && ir.ns === 'self' && resolveMeasureRef) return recur(resolveMeasureRef(ir.name));
   if (ir.op === 'Dirichlet' || (ir.op === 'Lebesgue'
-      && (ir.vectorSet?.set === 'stdsimplex' || ir.vectorSet?.set === 'zerosum'))) return ambient - 1;
+      && (ir.vectorSet?.set === 'stdsimplex' || ir.vectorSet?.set === 'zerosum'))) return 1;
   if (ir.op === 'weighted' || ir.op === 'logweighted' || ir.op === 'pushfwd' || ir.op === 'tilt') {
-    return diagonalReferenceDimension(ir.args[1], ambient);
+    return recur(ir.args[1]);
   }
-  if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'relabel') {
-    return diagonalReferenceDimension(ir.args[0], ambient);
-  }
+  if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'relabel') return recur(ir.args[0]);
   const branches = ir.op === 'select' ? ir.branches : ir.op === 'superpose' ? ir.args : null;
-  if (branches?.length) {
-    const dimension = diagonalReferenceDimension(branches[0], ambient);
-    if (branches.some((b: any) => diagonalReferenceDimension(b, ambient) !== dimension)) {
-      throw new Error('density: affine mixture branches have different reference dimensions');
-    }
-    return dimension;
-  }
-  if (ir.op === 'joint' && (ir.fields?.map((f: any) => f.value) || ir.args)
-      .some((part: any) => diagonalReferenceDimension(part, 1) !== 1)) {
+  if (branches?.length) return mixtureReferenceDeficit(branches, resolveMeasureRef, depth + 1, affineProducts);
+  const factors = ir.op === 'joint' ? (ir.fields?.map((f: any) => f.value) || ir.args) : null;
+  const copies = ir.op === 'iid' ? staticIidCount(ir.args?.[1]) : null;
+  if (!factors && ir.op !== 'iid') return 0;
+  const parts = factors ? factors.map(recur) : [recur(ir.args?.[0])];
+  if (parts.every((d: number) => d === 0)) return 0;
+  if (affineProducts) {
     throw new Error('density: affine product with singular components has no established reference dimension');
   }
-  return ambient;
+  if (!factors && copies == null) {
+    throw new Error('density: an iid of a lower-dimensional law needs a static size to count its '
+      + 'free coordinates');
+  }
+  return factors ? parts.reduce((a: number, b: number) => a + b, 0) : parts[0] * copies!;
+}
+
+// The number of copies a static `iid` size gives: an integer, or the product
+// of a vector of integers. Null when the size is not a literal.
+function staticIidCount(size: any): number | null {
+  const v = size?.kind === 'lit' ? size.value : null;
+  if (Number.isInteger(v) && v >= 0) return v;
+  if (Array.isArray(v) && v.every((n: any) => Number.isInteger(n) && n >= 0)) {
+    return v.reduce((a: number, b: number) => a * b, 1);
+  }
+  return null;
+}
+
+// A superposition has a density only when its continuous components share one
+// reference measure (§06 measure addition). §03 gives a `stdsimplex(n)` or
+// `zerosum(n)` support n − 1 free coordinates, so such a component and a
+// full-dimensional one have none in common. Counting components carry no
+// continuous reference and are not compared.
+function mixtureReferenceDeficit(branches: any[], resolveMeasureRef?: (name: string) => any, depth = 0,
+                                 affineProducts = false): number {
+  let deficit: number | null = null;
+  for (const b of branches) {
+    if (measureReferenceClass(b, 0, resolveMeasureRef) === 'noncontinuous') continue;
+    const d = referenceDeficit(b, resolveMeasureRef, depth + 1, affineProducts);
+    if (deficit !== null && d !== deficit) {
+      throw new Error('density: mixture branches have different reference dimensions (§03: a '
+        + 'stdsimplex(n) or zerosum(n) support has n − 1 free coordinates), so the '
+        + 'superposition has no density');
+    }
+    deficit = d;
+  }
+  return deficit ?? 0;
+}
+
+// Whether a measure is LKJ or LKJCholesky, through the wrappers that keep
+// their base's support.
+function isLkjLaw(ir: any, depth = 0): boolean {
+  if (!ir || depth > 64) return false;
+  if (ir.op === 'LKJ' || ir.op === 'LKJCholesky') return true;
+  if (ir.op === 'weighted' || ir.op === 'logweighted' || ir.op === 'pushfwd' || ir.op === 'tilt') {
+    return isLkjLaw(ir.args[1], depth + 1);
+  }
+  if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'relabel') return isLkjLaw(ir.args[0], depth + 1);
+  const parts = ir.op === 'select' ? ir.branches : ir.op === 'superpose' ? ir.args
+    : ir.op === 'joint' ? (ir.fields?.map((f: any) => f.value) || ir.args) : null;
+  return Array.isArray(parts) && parts.some((p: any) => isLkjLaw(p, depth + 1));
+}
+
+// §03 and §06 give `Lebesgue` on a `stdsimplex(n)` or `zerosum(n)` support as
+// the measure of its free coordinates, and only a uniform affine map carries
+// it to another such set. Every other image of such a law is singular against
+// each reference measure §06 names, and so is every image of LKJ or
+// LKJCholesky, whose support of correlation matrices §03 gives no chart (§06
+// "Singular laws"). An explicit `bijection` states its own volume and is taken
+// as written.
+function refuseLowerDimensionalImage(bij: any, M_ir: any): void {
+  if (bij && !bij.derived && !bij.registryName) return;
+  const lkj = isLkjLaw(M_ir);
+  if (!lkj && referenceDeficit(M_ir) === 0) return;
+  if (!lkj && bij?.registryName === 'diagonal_affine') return;
+  throw new Error('density: refused a pushfwd of a law on a lower-dimensional support: §03 and '
+    + '§06 give its image a density only for a stdsimplex(n) or zerosum(n) support under a '
+    + 'uniform affine map, which this engine reads when written x -> a .* x .+ b with scalar a; '
+    + 'every other image, and every image of LKJ or LKJCholesky, is singular (§06 "Singular laws")');
+}
+
+// The name a refusal shows for a pushforward's map: its binding, or the
+// built-in a bare name desugars to (`cumsum` becomes `fn(cumsum(_))`).
+function pushfwdMapLabel(f: any): string | null {
+  if (f?.kind === 'ref' && f.name) return f.name;
+  const params: any[] = f?.op === 'functionof' && Array.isArray(f.params) ? f.params : [];
+  const body = f?.body;
+  if (params.length && body?.kind === 'call' && typeof body.op === 'string'
+      && Array.isArray(body.args) && body.args.length === params.length
+      && body.args.every((a: any, i: number) => a?.kind === 'ref' && a.name === params[i])) {
+    return body.op;
+  }
+  return null;
 }
 
 // Expanded measure IR is stable during scoring, like the scalar-joint plans.
@@ -2535,10 +2627,9 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
     throw new Error('density: pushfwd base does not establish a homogeneous reference measure');
   }
   const counting = reference === 'noncontinuous';
+  if (!counting) refuseLowerDimensionalImage(bij, M_ir);
   if (!bij) {
-    const fRef = ir.args[0];
-    const fName = fRef && fRef.name;
-    throw new Error("density: pushfwd of '" + (fName || '<?>') + "' requires a "
+    throw new Error("density: pushfwd of '" + (pushfwdMapLabel(ir.args[0]) || '<?>') + "' requires a "
       + "bijection annotation — use bijection(f, f_inv, logvolume) to enable "
       + "pushforward density");
   }
@@ -3995,6 +4086,7 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
     throw new Error('density: select requires a non-empty branches array');
   }
   const K = branches.length;
+  mixtureReferenceDeficit(branches, opts.resolveMeasureRef);
 
   let sawCont = false, sawNonc = false, sawMixed = false;
   for (let k = 0; k < K; k++) {
