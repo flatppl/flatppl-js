@@ -4151,11 +4151,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const domainKind = dataTypes[0].domain?.kind;
       if (domainKind === 'array' || domainKind === 'table'
           || domainKind === 'record' || domainKind === 'tuple') {
-        diagnostics.push({ severity: 'error', loc: expr.loc,
-          message: 'locscale: a scalar shift is incompatible with a non-scalar '
-            + 'variate (spec §06); use iid(locscale(M, shift, scale), size) '
-            + 'for independent scalar location-scale transforms' });
-        return T.failed('locscale scalar shift over non-scalar variate');
+        return locscaleScalarShiftError(expr.loc);
       }
       if (domainKind !== 'scalar') return T.deferred();
       // Match the ordinary locscale pre-pass's literal-scale validation.
@@ -4163,8 +4159,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (scale?.kind === 'lit' && typeof scale.value === 'number'
           && (scale.value === 0 || !Number.isFinite(scale.value))) {
         diagnostics.push({ severity: 'error', loc: scale.loc || expr.loc,
-          message: 'locscale() scale must be a nonzero finite value; '
-            + 'a zero or non-finite scale is a degenerate, non-invertible affine map' });
+          message: 'locscale() scale must be a nonzero finite value; a zero or '
+            + 'non-finite scale is a degenerate, non-invertible affine map (spec §06 "Engine contract for '
+            + '`pushfwd` density evaluation": affine maps with nonzero scaling)' });
         return T.failed('locscale degenerate literal scale');
       }
       return dataTypes[0];
@@ -4752,7 +4749,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const baseT = inferExpr(args[0], scopes);  // base measure
     const shiftT = inferExpr(args[1], scopes);
     const scaleT = inferExpr(args[2], scopes);
+    // §07 `add` takes operands of one shape, so x ↦ scale·x + shift over a
+    // vector variate needs a vector shift. The dotted form refuses alike.
+    const domainKind = T.isMeasure(baseT) ? baseT.domain?.kind : null;
+    if (shiftT?.kind === 'scalar' && (domainKind === 'array' || domainKind === 'table'
+        || domainKind === 'record' || domainKind === 'tuple')) {
+      return locscaleScalarShiftError(expr.loc);
+    }
+    const n = domainKind === 'array' && baseT.domain.rank === 1 ? baseT.domain.shape?.[0] : null;
+    const k = shiftT?.kind === 'array' && shiftT.rank === 1 ? shiftT.shape?.[0] : null;
+    if (Number.isInteger(n) && Number.isInteger(k) && n !== k) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'locscale: a shift of length ' + k + ' does not match the variate of length ' + n
+          + '; shift and scale must be value-compatible with the variate (spec §06)' });
+      return T.failed('locscale shift length');
+    }
     return locscaleType(baseT, shiftT, scaleT);
+  }
+
+  function locscaleScalarShiftError(loc: any): any {
+    diagnostics.push({ severity: 'error', loc,
+      message: 'locscale: a scalar shift is incompatible with a non-scalar '
+        + 'variate (spec §06); use iid(locscale(M, shift, scale), size) '
+        + 'for independent scalar location-scale transforms' });
+    return T.failed('locscale scalar shift over non-scalar variate');
   }
 
   /** §06 affine result type, shared by scalar and broadcast cell inference. */

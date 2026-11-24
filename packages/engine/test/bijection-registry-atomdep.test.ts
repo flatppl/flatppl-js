@@ -60,6 +60,19 @@ test('diagonal affine registry preserves atom coefficients and reference volumes
   assert.throws(() => diagonal.atomBatchedForward(z, { ...params, scale: val([1, 2], [2, 3]) }, 2));
 });
 
+test('diagonal affine registry reads a vector shift per coordinate, fixed [D] or live [N, D]', () => {
+  const diagonal = bij.getBijection('diagonal_affine');
+  const z = val([2, 2], [1, 2, 3, 4]);
+  // N = D = 2: a fixed [D] shift adds [10, 20] to every atom.
+  const fixed = { scale: 2, shiftVector: val([2], [10, 20]) };
+  arrEq(diagonal.atomBatchedForward(z, fixed, 2).data, [12, 24, 16, 28]);
+  arrEq(diagonal.atomBatchedInverse(val([2, 2], [12, 24, 16, 28]), fixed, 2).data, [1, 2, 3, 4]);
+  const live = { scale: val([2], [1, -1]), shiftVector: val([2, 2], [10, 20, 30, 40]) };
+  arrEq(diagonal.atomBatchedForward(z, live, 2).data, [11, 22, 27, 36]);
+  assert.throws(() => diagonal.atomBatchedForward(z, { scale: 2, shiftVector: val([3], [1, 2, 3]) }, 2),
+    /shiftVector must be \[2\] or \[2, 2\]/);
+});
+
 // =====================================================================
 // R6 — atom-batched forward (per-atom matvec)
 // =====================================================================

@@ -883,7 +883,7 @@ export interface BindingInfo {
   /** Bijection metadata for bijection-typed bindings. */
   bijection?: { fName: string; fInvName: string; logVolume: any;
                 registryName?: string; paramIRs?: Record<string, any>;
-                stubForward?: boolean };
+                stubForward?: boolean; label?: string };
   [extra: string]: any;
 }
 

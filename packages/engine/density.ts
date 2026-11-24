@@ -2666,7 +2666,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   // opposite-sign field.
   if (bij.registryName) {
     const fRefForErr = ir.args[0];
-    const fNameForErr = (fRefForErr && fRefForErr.name) || '<?>';
+    const fNameForErr = bij.label || (fRefForErr && fRefForErr.name) || '<?>';
     if (!bij.paramIRs) {
       throw new Error("density: pushfwd bijection '" + fNameForErr
         + "' has registryName='" + bij.registryName

@@ -3307,6 +3307,10 @@ function _rewriteLocscale(node: any, synth: any[], diagnostics: any[], body: any
   return out;
 }
 
+const LOCSCALE_DEGENERATE_SCALE = 'locscale() scale must be a nonzero finite value; a zero or '
+  + 'non-finite scale is a degenerate, non-invertible affine map (spec §06 "Engine contract for '
+  + '`pushfwd` density evaluation": affine maps with nonzero scaling)';
+
 function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body: any[]): any {
   // Reuse the call's real line/col (marked synthetic) so source-slicing
   // for symbols stays well-formed — mirrors restrict-expand's sloc.
@@ -3395,6 +3399,23 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
     /* c8 ignore stop */
     return false;
   };
+  // §06 admits affine maps with nonzero scaling, whatever the shift's shape.
+  const scale = args[2];
+  if (scale.type === 'NumberLiteral' && (scale.value === 0 || !Number.isFinite(scale.value))) {
+    diagnostics.push({ severity: 'error', message: LOCSCALE_DEGENERATE_SCALE, loc: scale.loc });
+    return call;
+  }
+  // A scalar scale with a vector shift is the uniform map lift routes over any
+  // vector law; a matrix scale or shift still needs an iid base.
+  const looksMatrix = (e: any): boolean => {
+    if (e?.type === 'ArrayLiteral') return e.elements.some((r: any) => r?.type === 'ArrayLiteral');
+    if (e?.type === 'CallExpr' && e.callee?.type === 'Identifier') return MATRIXY_OPS.has(e.callee.name);
+    if (e?.type !== 'Identifier') return false;
+    const st = (body || []).find((s: any) => s.type === 'AssignStatement'
+      && s.names?.some((n: any) => n.name === e.name));
+    return !!st && looksMatrix(st.value);
+  };
+  if (!looksNonScalar(args[2]) && looksNonScalar(args[1]) && !looksMatrix(args[1])) return call;
   if (looksNonScalar(args[1]) || looksNonScalar(args[2])) {
     // Only an iid base routes through lift's affine-registry lowering. For
     // any other base — including MvNormal, itself a pushfwd∘pushfwd whose
@@ -3517,14 +3538,6 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
   // Keep location and scale as explicit measure parameters through analysis.
   // Lift lowers the affine map after the user's callable captures are checked.
   // Expanding it here creates synthetic callables that capture these draws.
-  const scale = args[2];
-  if (scale.type === 'NumberLiteral' && (scale.value === 0 || !Number.isFinite(scale.value))) {
-    diagnostics.push({
-      severity: 'error',
-      message: 'locscale() scale must be a nonzero finite value',
-      loc: scale.loc,
-    });
-  }
   return call;
 }
 

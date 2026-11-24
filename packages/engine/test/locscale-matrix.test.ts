@@ -124,24 +124,8 @@ test('matrix locscale over an MvNormal base gives a clean diagnostic (deferred)'
     `expected guidance to use iid base / pushfwd directly, got: ${msg}`);
 });
 
-test('vector-shift + scalar-scale locscale errors cleanly (no [D,D] matrix scale)', () => {
-  // A vector shift forces the call to survive the scalar-expansion pre-pass,
-  // but a SCALAR scale (not a [D,D] matrix) cannot lower to an affine-registry
-  // pushfwd. This must surface a clean locscale-tagged error (analyzer shape
-  // diagnostic OR the buildDerivations safety net), NOT a cryptic downstream
-  // failure or a silently-dropped binding.
-  const src =
-    `X = locscale(iid(Normal(0.0, 1.0), 2), [0.0, 0.0], 2.0)\n`;
-  let msg = '';
-  try {
-    const lifted2 = processSource(src);
-    const errs = lifted2.diagnostics.filter((d: any) => d.severity === 'error');
-    if (errs.length) msg = errs.map((e: any) => e.message).join(' | ');
-    else { orchestrator.buildDerivations(lifted2.bindings); }
-  } catch (e: any) { msg = e.message; }
-  assert.match(msg, /locscale/i,
-    `expected a locscale-tagged error, got: ${msg || '(none)'}`);
-});
+// A vector shift with a scalar scale is the uniform map of the diagonal
+// route; locscale-scalar-scale.test.ts scores it.
 
 test('square transpose scale still routes to the affine registry', () => {
   // After Fix 1 (transpose removed from the lift gate's square-op set), a
